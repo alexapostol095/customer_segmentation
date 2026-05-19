@@ -470,11 +470,15 @@ with st.sidebar:
     selected_customers = st.multiselect("Customers", all_customers, placeholder="All customers")
 
     # Detect all low-cardinality categorical columns for filtering
+    id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
     filter_cat_cols = [
         c for c in df.columns
-        if str(df[c].dtype) in ('object', 'category')
-        and c not in ['CustomerId', 'InvoiceId', 'ProductId']
+        if c not in id_cols
         and 1 < df[c].nunique() < 200
+        and (
+            str(df[c].dtype) in ('object', 'category')
+            or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
+        )
     ]
 
     cat_filters = {}
@@ -514,11 +518,15 @@ if 'confirmed_specialty' in st.session_state:
 
 # Helper: detect categorical columns available for grouping
 def get_cat_cols(df):
+    id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
     return [
         c for c in df.columns
-        if str(df[c].dtype) in ('object', 'category')
-        and c not in ['CustomerId', 'InvoiceId', 'ProductId']
+        if c not in id_cols
         and 1 < df[c].nunique() < 200
+        and (
+            str(df[c].dtype) in ('object', 'category')
+            or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
+        )
     ]
 
 cat_cols = get_cat_cols(fdf)
