@@ -487,6 +487,26 @@ with st.sidebar:
         selected = st.multiselect(col, vals, placeholder=f"All {col}", key=f"filter_{col}")
         cat_filters[col] = selected
 
+    with st.expander("Debug: column detection", expanded=False):
+        debug_rows = []
+        for c in df.columns:
+            n_unique = df[c].nunique()
+            dtype = str(df[c].dtype)
+            included = c in filter_cat_cols
+            reason = ""
+            if c in id_cols:
+                reason = "ID column"
+            elif n_unique <= 1:
+                reason = f"only {n_unique} unique value"
+            elif n_unique >= 200:
+                reason = f"{n_unique} unique values (≥200)"
+            elif dtype not in ('object', 'category') and not (df[c].dtype in ['int64', 'float64', 'Int64'] and n_unique < 50):
+                reason = f"dtype {dtype} not categorical"
+            else:
+                reason = "included"
+            debug_rows.append({'Column': c, 'dtype': dtype, 'Unique': n_unique, 'Included': included, 'Reason': reason})
+        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, hide_index=True)
+
     st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{len(df):,} rows · {df['CustomerId'].nunique():,} customers</span>", unsafe_allow_html=True)
 
