@@ -476,7 +476,8 @@ with st.sidebar:
         if c not in id_cols
         and 1 < df[c].nunique() < 200
         and (
-            str(df[c].dtype) in ('object', 'category')
+            str(df[c].dtype) in ('object', 'category', 'str', 'string')
+            or (str(df[c].dtype).startswith('str') )
             or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
         )
     ]
@@ -544,7 +545,8 @@ def get_cat_cols(df):
         if c not in id_cols
         and 1 < df[c].nunique() < 200
         and (
-            str(df[c].dtype) in ('object', 'category')
+            str(df[c].dtype) in ('object', 'category', 'str', 'string')
+            or str(df[c].dtype).startswith('str')
             or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
         )
     ]
