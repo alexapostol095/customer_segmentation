@@ -243,7 +243,7 @@ def metric_card(label, value, sub=""):
 
 @st.cache_data(show_spinner=False)
 def load_and_prepare(file_bytes):
-    df = pd.read_csv(file_bytes) if file_bytes.name.endswith(".csv") else pd.read_excel(file_bytes)
+    df = pd.read_csv(file_bytes, low_memory=False) if file_bytes.name.endswith(".csv") else pd.read_excel(file_bytes)
 
     # Normalise column names
     df.columns = df.columns.str.strip()
@@ -411,7 +411,7 @@ def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile
 st.markdown("<h1 style='margin-bottom:0'>Customer Insights Explorer</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#9a8f85;margin-top:0.2rem;margin-bottom:2rem'>Upload your order lines data to begin exploring</p>", unsafe_allow_html=True)
 
-uploaded = st.file_uploader("", type=["csv", "xlsx"], label_visibility="collapsed")
+uploaded = st.file_uploader("Upload order lines file", type=["csv", "xlsx"], label_visibility="collapsed")
 
 if uploaded is None:
     st.markdown("""
@@ -506,7 +506,7 @@ with st.sidebar:
             else:
                 reason = "included"
             debug_rows.append({'Column': c, 'dtype': dtype, 'Unique': n_unique, 'Included': included, 'Reason': reason})
-        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(debug_rows), width='stretch', hide_index=True)
 
     st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{len(df):,} rows · {df['CustomerId'].nunique():,} customers</span>", unsafe_allow_html=True)
@@ -662,7 +662,7 @@ elif analysis == "Category Breakdown":
         grp_summary['RevenueShare'] = (grp_summary['Revenue'] / grp_summary['Revenue'].sum()).map('{:.1%}'.format)
         grp_summary['AvgOrderValue'] = grp_summary['AvgOrderValue'].map(lambda x: f"€{x:,.2f}")
         grp_summary['Revenue']       = grp_summary['Revenue'].map(fmt_currency)
-        st.dataframe(grp_summary, use_container_width=True, hide_index=True)
+        st.dataframe(grp_summary, width='stretch', hide_index=True)
 
     with tab2:
         cust_id = st.selectbox("Select customer", sorted(fdf['CustomerId'].unique().tolist()), key="cb_cust")
@@ -681,7 +681,7 @@ elif analysis == "Category Breakdown":
             'Spend': cust_grp.map(fmt_currency).values,
             'Share': cust_grp_share.map('{:.1%}'.format).values,
         })
-        st.dataframe(cust_grp_df[cust_grp_df['Spend'] != '€0'], use_container_width=True, hide_index=True)
+        st.dataframe(cust_grp_df[cust_grp_df['Spend'] != '€0'], width='stretch', hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 4 — REPEAT PURCHASES
@@ -707,7 +707,7 @@ elif analysis == "Repeat Purchases":
         )
         top_repeat['TotalSpend']    = top_repeat['TotalSpend'].map(fmt_currency)
         top_repeat['AvgOrderCount'] = top_repeat['AvgOrderCount'].map('{:.1f}'.format)
-        st.dataframe(top_repeat, use_container_width=True, hide_index=True)
+        st.dataframe(top_repeat, width='stretch', hide_index=True)
 
     with tab2:
         rp_col = st.selectbox(
@@ -738,7 +738,7 @@ elif analysis == "Repeat Purchases":
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown(f"**Repeat rate by {rp_col}**")
-            st.dataframe(repeat_grp, use_container_width=True, hide_index=True)
+            st.dataframe(repeat_grp, width='stretch', hide_index=True)
         with col2:
             repeat_grp2 = (
                 order_counts_df.groupby(rp_col)
@@ -770,7 +770,7 @@ elif analysis == "Repeat Purchases":
             cust_repeats = cust_repeats.sort_values('OrderCount', ascending=False)
             cust_repeats['TotalSpend'] = cust_repeats['TotalSpend'].map(fmt_currency)
             st.dataframe(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']],
-                         use_container_width=True, hide_index=True)
+                         width='stretch', hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 5 — BASKET ANALYSIS
@@ -877,7 +877,7 @@ elif analysis == "Basket Analysis":
         with col_b1:
             disp_basket = expected_basket.copy()
             disp_basket['CustomerRate'] = disp_basket['CustomerRate'].map('{:.1%}'.format)
-            st.dataframe(disp_basket, use_container_width=True, hide_index=True)
+            st.dataframe(disp_basket, width='stretch', hide_index=True)
 
         with col_b2:
             top_basket = expected_basket.head(20)
@@ -944,7 +944,7 @@ elif analysis == "Basket Analysis":
         st.dataframe(
             leakage_display[['CustomerId', 'TotalSpend', 'BasketItemsBought',
                               'ItemsMissing', 'CoverageRate', 'MissingProducts']],
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
 
         # Individual customer leakage drill-down
@@ -972,7 +972,7 @@ elif analysis == "Basket Analysis":
                 st.markdown("**Products this customer has never bought (cross-sell opportunities)**")
                 miss_df = expected_basket[expected_basket['ProductId'].isin(missing)].copy()
                 miss_df['CustomerRate'] = miss_df['CustomerRate'].map('{:.1%}'.format)
-                st.dataframe(miss_df, use_container_width=True, hide_index=True)
+                st.dataframe(miss_df, width='stretch', hide_index=True)
             else:
                 st.success("This customer buys everything in the expected basket.")
 
@@ -1039,7 +1039,7 @@ elif analysis == "Basket Analysis":
                 st.markdown(f"**Basket around `{anchor}`**")
                 disp_anchor = anchor_basket.copy()
                 disp_anchor['CoRate'] = disp_anchor['CoRate'].map('{:.1%}'.format)
-                st.dataframe(disp_anchor, use_container_width=True, hide_index=True)
+                st.dataframe(disp_anchor, width='stretch', hide_index=True)
             with col_b2:
                 top_anchor = anchor_basket.head(20)
                 fig, ax = plt.subplots(figsize=(6, max(3, len(top_anchor) * 0.38)))
@@ -1112,7 +1112,7 @@ elif analysis == "Basket Analysis":
                 st.dataframe(
                     anchor_leakage_display[['CustomerId', 'TotalSpend', 'BasketItemsBought',
                                             'ItemsMissing', 'CoverageRate', 'MissingProducts']],
-                    use_container_width=True, hide_index=True
+                    width='stretch', hide_index=True
                 )
 
                 st.markdown("---")
@@ -1142,7 +1142,7 @@ elif analysis == "Basket Analysis":
                         st.markdown("**Products this customer hasn't bought (cross-sell opportunities)**")
                         miss_df = anchor_basket[anchor_basket['ProductId'].isin(missing_anchor)].copy()
                         miss_df['CoRate'] = miss_df['CoRate'].map('{:.1%}'.format)
-                        st.dataframe(miss_df, use_container_width=True, hide_index=True)
+                        st.dataframe(miss_df, width='stretch', hide_index=True)
                     else:
                         st.success("This customer buys everything in the expected basket.")
             else:
@@ -1496,10 +1496,10 @@ elif analysis == "Basket Analysis":
             with c2: metric_card("Unclassified", str((assignment_df['AssignedBasket'] == 'Unclassified').sum()))
             with c3: metric_card("No Segmentation", str((assignment_df['AssignedBasket'] == 'No Segmentation').sum()))
 
-            st.dataframe(summary, use_container_width=True, hide_index=True)
+            st.dataframe(summary, width='stretch', hide_index=True)
 
             st.markdown("**Full customer assignment table**")
-            st.dataframe(assignment_df, use_container_width=True, hide_index=True)
+            st.dataframe(assignment_df, width='stretch', hide_index=True)
 
             # ── Confirm to use in KVI ──────────────────────────────────────────
             st.markdown("---")
@@ -1663,7 +1663,7 @@ elif analysis == "Basket Analysis":
             display_df = exp_df.drop(columns=['Combo']).copy()
             if 'BasketMargin' in display_df.columns and display_df['BasketMargin'].isna().all():
                 display_df = display_df.drop(columns=['BasketMargin'])
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
 
             # ── Scatter plot ──────────────────────────────────────────────────
             st.markdown("---")
@@ -1746,7 +1746,7 @@ elif analysis == "Basket Analysis":
                 margin=dict(l=60, r=60, t=60, b=60),
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # ── Customer Explorer ─────────────────────────────────────────────
             st.markdown("---")
@@ -1859,7 +1859,7 @@ elif analysis == "Basket Analysis":
                     cust_agg['TotalMargin'] = cust_agg['TotalMargin'].map(fmt_currency)
 
                 st.markdown("**Customers who ordered this basket**")
-                st.dataframe(cust_agg, use_container_width=True, hide_index=True)
+                st.dataframe(cust_agg, width='stretch', hide_index=True)
 
                 # What else do these customers buy outside the basket
                 st.markdown("**What else do these customers commonly buy?**")
@@ -1882,7 +1882,7 @@ elif analysis == "Basket Analysis":
                 other['TotalRevenue'] = other['TotalRevenue'].map(fmt_currency)
                 if has_cost_exp and 'TotalMargin' in other.columns:
                     other['TotalMargin'] = other['TotalMargin'].map(fmt_currency)
-                st.dataframe(other, use_container_width=True, hide_index=True)
+                st.dataframe(other, width='stretch', hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 6 — CUSTOMER SPECIALTY
@@ -1977,7 +1977,7 @@ elif analysis == "Customer Specialty":
         display_summary['AvgShare']     = display_summary['AvgShare'].map('{:.1%}'.format)
         display_summary['AvgRecency']   = display_summary['AvgRecency'].map('{:.0f} days'.format)
         display_summary['AvgFrequency'] = display_summary['AvgFrequency'].map('{:.1f}'.format)
-        st.dataframe(display_summary, use_container_width=True, hide_index=True)
+        st.dataframe(display_summary, width='stretch', hide_index=True)
 
         st.markdown("")
         col_a, col_b = st.columns(2)
@@ -2037,7 +2037,7 @@ elif analysis == "Customer Specialty":
         st.dataframe(
             display_customers[['CustomerId', 'Specialty', 'SpecialtyShare',
                                 'TotalSpend', 'Frequency', 'Recency']],
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
 
         st.markdown("---")
@@ -2109,7 +2109,7 @@ elif analysis == "Customer Specialty":
             top_spec_custs['SpecialtyShare'] = top_spec_custs['SpecialtyShare'].map('{:.1%}'.format)
             st.dataframe(
                 top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']],
-                use_container_width=True, hide_index=True
+                width='stretch', hide_index=True
             )
 
         with col_b:
@@ -2152,7 +2152,7 @@ elif analysis == "Customer Specialty":
             'Share':       cust_grp_share.map('{:.1%}'.format).values,
         })
         st.dataframe(cust_display[cust_display['Spend'] != '€0'],
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 7 — KVI CLASSIFICATION
@@ -2274,7 +2274,7 @@ elif analysis == "KVI Classification":
             sub[['ProductId', 'Quantity', 'Price', 'Revenue', 'UniqueCustomers',
                  'PurchaseCount', 'Demand_Proportion', 'Revenue_Proportion',
                  'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
 
     with tab1:
@@ -2332,7 +2332,7 @@ elif analysis == "KVI Classification":
                   'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']] = \
             score_df[['Demand_Proportion_Scaled', 'Revenue_Proportion_Scaled',
                       'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']].round(3)
-        st.dataframe(score_df, use_container_width=True, hide_index=True)
+        st.dataframe(score_df, width='stretch', hide_index=True)
 
     # ── Export ─────────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -2614,7 +2614,7 @@ elif analysis == "Pricing Simulation":
         seg_display = seg_results.copy()
         for col in ['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta']:
             seg_display[col] = seg_display[col].map(fmt_currency)
-        st.dataframe(seg_display, use_container_width=True, hide_index=True)
+        st.dataframe(seg_display, width='stretch', hide_index=True)
 
         # Per-category breakdown
         st.markdown("**Impact by product category**")
@@ -2636,7 +2636,7 @@ elif analysis == "Pricing Simulation":
         cat_display = cat_results.copy()
         for col in ['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta']:
             cat_display[col] = cat_display[col].map(fmt_currency)
-        st.dataframe(cat_display, use_container_width=True, hide_index=True)
+        st.dataframe(cat_display, width='stretch', hide_index=True)
 
         # Charts
         st.markdown("**Revenue & Margin delta by segment**")
