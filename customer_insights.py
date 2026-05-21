@@ -786,24 +786,24 @@ elif analysis == "Basket Analysis":
     tab1, tab2, tab3, tab4 = st.tabs(["Specialty Basket", "Anchor Product Basket", "Basket Segmentation", "Basket Exploration"])
 
     # ── Shared setup ───────────────────────────────────────────────────────────
+    _id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
     cat_cols_basket = [
         c for c in fdf.columns
-        if str(fdf[c].dtype) in ('object', 'category', 'str', 'string')
-        or str(fdf[c].dtype).startswith('str')
-        and c not in ['CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate']
+        if c not in _id_cols
         and 1 < fdf[c].nunique() < 200
+        and (
+            str(fdf[c].dtype) in ('object', 'category', 'str', 'string')
+            or str(fdf[c].dtype).startswith('str')
+        )
     ]
-    # Exclude ID-like columns explicitly
-    cat_cols_basket = [c for c in cat_cols_basket
-                       if c not in ['CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate']]
+
+    if not cat_cols_basket:
+        st.warning("No categorical columns detected. Ensure your file contains columns like MainGroup, SubGroup, or Segmentation.")
+        st.stop()
 
     # ── TAB 1: SPECIALTY BASKET ────────────────────────────────────────────────
     with tab1:
         st.markdown("**Build the typical basket for a customer specialty, then find who's missing items.**")
-
-        if not cat_cols_basket:
-            st.warning("No categorical columns detected in your data. Ensure your file contains columns like MainGroup, SubGroup, or Segmentation.")
-            st.stop()
 
         col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
         with col_ctrl1:
