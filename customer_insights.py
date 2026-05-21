@@ -1752,24 +1752,16 @@ elif analysis == "Basket Analysis":
             if prefill != "— select manually —":
                 prefill_row = exp_df[exp_df['Products'] == prefill].iloc[0]
                 new_prods = [str(p) for p in prefill_row['Combo']]
-                # Only update if selection changed
                 if st.session_state.get('exp_prefill_last') != prefill:
-                    st.session_state['exp_explorer_prods_val'] = new_prods
                     st.session_state['exp_prefill_last'] = prefill
-            elif st.session_state.get('exp_prefill_last') is not None:
-                st.session_state['exp_prefill_last'] = None
-
-            current_prods = st.session_state.get('exp_explorer_prods_val', [])
+                    st.session_state['exp_explorer_prods'] = new_prods
+                    st.rerun()
 
             explorer_prods = st.multiselect(
                 "Products in basket",
                 all_exp_products,
-                default=current_prods,
                 key="exp_explorer_prods"
             )
-
-            # Keep session state in sync with manual edits
-            st.session_state['exp_explorer_prods_val'] = explorer_prods
 
             if not explorer_prods:
                 st.info("Select at least one product to explore.")
