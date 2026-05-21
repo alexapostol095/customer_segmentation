@@ -987,8 +987,8 @@ elif analysis == "Basket Analysis":
     with tab2:
         st.markdown("**Pick an anchor product — see what else customers buy alongside it, then check who's missing those items.**")
 
-        top_n_anchor = st.sidebar.slider("Max products to analyse", 20, 200, 50,
-                                          help="Limits product universe", key="anchor_top_n")
+        top_n_anchor = st.slider("Max products to analyse", 20, 200, 50,
+                                  help="Limits product universe", key="anchor_top_n")
         top_prods = (
             fdf.groupby('ProductId')['InvoiceId'].nunique()
             .sort_values(ascending=False)
