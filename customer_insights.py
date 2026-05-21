@@ -1322,6 +1322,7 @@ elif analysis == "Basket Analysis":
                     if st.button(f"Load into editor", key=f"load_sug_{i}"):
                         st.session_state['_basket_name_val'] = sug['name']
                         st.session_state['_basket_products_val'] = sug['products']
+                        st.session_state['_basket_editor_version'] = st.session_state.get('_basket_editor_version', 0) + 1
                         st.rerun()
 
         # ── Basket editor ──────────────────────────────────────────────────────
@@ -1330,18 +1331,20 @@ elif analysis == "Basket Analysis":
         st.caption("Name your basket and select the products that define it. Save multiple baskets to build a full segmentation.")
 
         col_name, col_add = st.columns([1, 1])
+        # Use a counter in the key to force re-render when a suggestion is loaded
+        editor_version = st.session_state.get('_basket_editor_version', 0)
         with col_name:
             basket_name = st.text_input(
                 "Basket name (e.g. Ceiling Specialist)",
                 value=st.session_state.get('_basket_name_val', ''),
-                key="basket_name_input"
+                key=f"basket_name_input_{editor_version}"
             )
         with col_add:
             basket_products = st.multiselect(
                 "Products in this basket",
                 all_products,
                 default=st.session_state.get('_basket_products_val', []),
-                key="basket_products_input"
+                key=f"basket_products_input_{editor_version}"
             )
 
         # Live info for currently selected products
@@ -1362,6 +1365,7 @@ elif analysis == "Basket Analysis":
                     st.session_state['defined_baskets'][basket_name] = [str(p) for p in basket_products]
                     st.session_state['_basket_name_val'] = ''
                     st.session_state['_basket_products_val'] = []
+                    st.session_state['_basket_editor_version'] = st.session_state.get('_basket_editor_version', 0) + 1
                     st.rerun()
                 else:
                     st.warning("Please enter a basket name and select at least one product.")
