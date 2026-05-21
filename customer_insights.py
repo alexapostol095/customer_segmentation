@@ -826,9 +826,10 @@ elif analysis == "Basket Analysis":
         )
         sb_share = sb_spend.div(sb_spend.sum(axis=1), axis=0)
         spec_labels = pd.DataFrame({
-            'Specialty':      sb_share.idxmax(axis=1),
-            'SpecialtyShare': sb_share.max(axis=1),
-        }).reset_index()
+            'CustomerId':     sb_share.index,
+            'Specialty':      sb_share.idxmax(axis=1).values,
+            'SpecialtyShare': sb_share.max(axis=1).values,
+        })
         spec_labels['Specialty'] = spec_labels.apply(
             lambda r: r['Specialty'] if r['SpecialtyShare'] >= spec_threshold else 'Generalist',
             axis=1
