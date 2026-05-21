@@ -827,7 +827,7 @@ elif analysis == "Basket Analysis":
         sb_share = sb_spend.div(sb_spend.sum(axis=1), axis=0)
         spec_labels = pd.DataFrame({
             'CustomerId':     sb_share.index,
-            'Specialty':      sb_share.idxmax(axis=1).values,
+            'Specialty':      sb_share.idxmax(axis=1).astype(str).values,
             'SpecialtyShare': sb_share.max(axis=1).values,
         })
         spec_labels['Specialty'] = spec_labels.apply(
