@@ -357,35 +357,24 @@ def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile
     product_to_idx = {p: i for i, p in enumerate(product_ids)}
     n_products = len(product_ids)
 
-    # Limit co-occurrence to top 500 products by purchase count to avoid memory issues
-    top_500 = dfAll.nlargest(min(500, n_products), 'PurchaseCount')['ProductId'].tolist()
-    top_500_set = set(top_500)
-    top_500_idx = {p: i for i, p in enumerate(top_500)}
-
-    filtered = df[df['ProductId'].isin(top_500_set)]
+    filtered = df[df['ProductId'].isin(product_ids)]
     grouped = filtered.groupby('InvoiceId')['ProductId'].apply(list)
 
     rows, cols, data = [], [], []
     for products in grouped:
-        prods_in_top = [p for p in products if p in top_500_set]
-        for i in range(len(prods_in_top)):
-            for j in range(len(prods_in_top)):
-                rows.append(top_500_idx[prods_in_top[i]])
-                cols.append(top_500_idx[prods_in_top[j]])
+        for i in range(len(products)):
+            for j in range(len(products)):
+                rows.append(product_to_idx[products[i]])
+                cols.append(product_to_idx[products[j]])
                 data.append(1)
 
-    n_top = len(top_500)
-    if rows:
-        Q = coo_matrix((data, (rows, cols)), shape=(n_top, n_top)).toarray()
-        Q_j = Q.sum(axis=1)
-        Q_j[Q_j == 0] = 1
-        score = (Q / Q_j).sum(axis=1) / n_top
-        product_score_map = {p: score[i] for i, p in enumerate(top_500)}
-    else:
-        product_score_map = {}
+    Q = coo_matrix((data, (rows, cols)), shape=(n_products, n_products)).toarray()
+    Q_j = Q.sum(axis=1)
+    Q_j[Q_j == 0] = 1
+    score = (Q / Q_j).sum(axis=1) / n_products
+    product_score_map = {p: score[i] for i, p in enumerate(product_ids)}
 
-    # Products outside top 500 get a neutral score of 0
-    dfAll['Corr_Score'] = dfAll['ProductId'].map(product_score_map).fillna(0)
+    dfAll['Corr_Score'] = dfAll['ProductId'].map(product_score_map)
     dfAll['Corr_Score_Scaled'] = StandardScaler().fit_transform(dfAll[['Corr_Score']])
 
     dfAll['KVI_Score'] = (
@@ -864,15 +853,16 @@ elif analysis == "Basket Analysis":
         spec_invoices = fdf[fdf['CustomerId'].isin(spec_customer_ids)]['InvoiceId'].unique()
         n_spec_customers = len(spec_customer_ids)
 
-        # How often each product appears — measured by customer count
+        # How often each product appears across this specialty's invoices
         prod_freq = (
-            fdf[fdf['CustomerId'].isin(spec_customer_ids)]
-            .groupby('ProductId')['CustomerId']
-            .nunique()
+            fdf[fdf['InvoiceId'].isin(spec_invoices)]
+            .groupby('ProductId')['InvoiceId'].nunique()
             .reset_index()
-            .rename(columns={'CustomerId': 'CustomerCount'})
+            .rename(columns={'InvoiceId': 'InvoiceCount'})
         )
-        prod_freq['CustomerRate'] = prod_freq['CustomerCount'] / n_spec_customers
+        prod_freq['CustomerRate'] = prod_freq['InvoiceCount'] / fdf[
+            fdf['CustomerId'].isin(spec_customer_ids)
+        ]['InvoiceId'].nunique()
 
         expected_basket = prod_freq[prod_freq['CustomerRate'] >= basket_min_rate].sort_values(
             'CustomerRate', ascending=False
@@ -1609,18 +1599,18 @@ elif analysis == "Basket Analysis":
                 df = df.copy()
                 df['LineMargin'] = (df['PricePerUnit'] - df['TotalCostPerUnit']) * df['Quantity']
 
-            # Build product list per invoice — much faster than full pivot
-            inv_products = (
-                df.groupby('InvoiceId')['ProductId']
-                .apply(lambda x: sorted(x.astype(str).unique().tolist()))
-                .reset_index()
+            inv_bin = (
+                df.groupby(['InvoiceId', 'ProductId'])['Quantity']
+                .sum()
+                .unstack(fill_value=0)
             )
+            inv_bin = (inv_bin > 0).astype(int)
 
-            # Generate combos from invoice product lists
             combos = []
-            for prods in inv_products['ProductId']:
-                if len(prods) >= size:
-                    for combo in combinations(prods, size):
+            for _, row in inv_bin.iterrows():
+                bought = list(row[row == 1].index)
+                if len(bought) >= size:
+                    for combo in combinations(sorted(bought), size):
                         combos.append(combo)
 
             if not combos:
@@ -1628,31 +1618,30 @@ elif analysis == "Basket Analysis":
 
             combo_counts = pd.Series(combos).value_counts().head(n_results * 3)
 
-            # Build a lookup: invoice -> set of products
-            inv_prod_sets = inv_products.set_index('InvoiceId')['ProductId'].apply(set)
-
             rows = []
             for combo, inv_count in combo_counts.items():
                 combo_set = set(combo)
-                basket_inv = inv_prod_sets[inv_prod_sets.apply(lambda s: combo_set.issubset(s))].index
+                # Invoices with full basket
+                inv_mask = inv_bin[list(combo_set)].all(axis=1)
+                basket_invoices = inv_bin[inv_mask].index
 
                 basket_lines = df[
-                    df['InvoiceId'].isin(basket_inv) &
-                    df['ProductId'].astype(str).isin(combo_set)
+                    df['InvoiceId'].isin(basket_invoices) &
+                    df['ProductId'].isin(combo_set)
                 ]
-                cust_count = df[df['InvoiceId'].isin(basket_inv)]['CustomerId'].nunique()
+                cust_count = df[df['InvoiceId'].isin(basket_invoices)]['CustomerId'].nunique()
                 revenue    = basket_lines['LineRevenue'].sum()
                 margin     = basket_lines['LineMargin'].sum() if has_cost else None
-                avg_rev    = revenue / len(basket_inv) if len(basket_inv) > 0 else 0
+                avg_rev_per_inv = revenue / len(basket_invoices) if len(basket_invoices) > 0 else 0
 
                 rows.append({
-                    'Combo':              combo,
-                    'Products':           ' + '.join(str(p) for p in combo),
-                    'InvoiceCount':       inv_count,
-                    'CustomerCount':      cust_count,
-                    'BasketRevenue':      round(revenue, 0),
-                    'BasketMargin':       round(margin, 0) if margin is not None else None,
-                    'AvgRevenuePerInvoice': round(avg_rev, 0),
+                    'Combo':           combo,
+                    'Products':        ' + '.join(str(p) for p in combo),
+                    'InvoiceCount':    inv_count,
+                    'CustomerCount':   cust_count,
+                    'BasketRevenue':   round(revenue, 0),
+                    'BasketMargin':    round(margin, 0) if margin is not None else None,
+                    'AvgRevenuePerInvoice': round(avg_rev_per_inv, 0),
                 })
 
             return pd.DataFrame(rows)
