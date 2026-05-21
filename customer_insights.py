@@ -368,13 +368,16 @@ def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile
                 cols.append(product_to_idx[products[j]])
                 data.append(1)
 
-    Q = coo_matrix((data, (rows, cols)), shape=(n_products, n_products)).toarray()
-    Q_j = Q.sum(axis=1)
-    Q_j[Q_j == 0] = 1
-    score = (Q / Q_j).sum(axis=1) / n_products
-    product_score_map = {p: score[i] for i, p in enumerate(product_ids)}
+    if rows:
+        Q = coo_matrix((data, (rows, cols)), shape=(n_products, n_products)).toarray()
+        Q_j = Q.sum(axis=1)
+        Q_j[Q_j == 0] = 1
+        score = (Q / Q_j).sum(axis=1) / n_products
+        product_score_map = {p: score[i] for i, p in enumerate(product_ids)}
+    else:
+        product_score_map = {}
 
-    dfAll['Corr_Score'] = dfAll['ProductId'].map(product_score_map)
+    dfAll['Corr_Score'] = dfAll['ProductId'].map(product_score_map).fillna(0)
     dfAll['Corr_Score_Scaled'] = StandardScaler().fit_transform(dfAll[['Corr_Score']])
 
     dfAll['KVI_Score'] = (
@@ -487,26 +490,6 @@ with st.sidebar:
         vals = sorted(df[col].dropna().astype(str).unique().tolist())
         selected = st.multiselect(col, vals, placeholder=f"All {col}", key=f"filter_{col}")
         cat_filters[col] = selected
-
-    with st.expander("Debug: column detection", expanded=False):
-        debug_rows = []
-        for c in df.columns:
-            n_unique = df[c].nunique()
-            dtype = str(df[c].dtype)
-            included = c in filter_cat_cols
-            reason = ""
-            if c in id_cols:
-                reason = "ID column"
-            elif n_unique <= 1:
-                reason = f"only {n_unique} unique value"
-            elif n_unique >= 200:
-                reason = f"{n_unique} unique values (≥200)"
-            elif dtype not in ('object', 'category') and not (df[c].dtype in ['int64', 'float64', 'Int64'] and n_unique < 50):
-                reason = f"dtype {dtype} not categorical"
-            else:
-                reason = "included"
-            debug_rows.append({'Column': c, 'dtype': dtype, 'Unique': n_unique, 'Included': included, 'Reason': reason})
-        st.dataframe(pd.DataFrame(debug_rows), width='stretch', hide_index=True)
 
     st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{len(df):,} rows · {df['CustomerId'].nunique():,} customers</span>", unsafe_allow_html=True)
@@ -853,16 +836,15 @@ elif analysis == "Basket Analysis":
         spec_invoices = fdf[fdf['CustomerId'].isin(spec_customer_ids)]['InvoiceId'].unique()
         n_spec_customers = len(spec_customer_ids)
 
-        # How often each product appears across this specialty's invoices
+        # How often each product appears — measured by customer count
         prod_freq = (
-            fdf[fdf['InvoiceId'].isin(spec_invoices)]
-            .groupby('ProductId')['InvoiceId'].nunique()
+            fdf[fdf['CustomerId'].isin(spec_customer_ids)]
+            .groupby('ProductId')['CustomerId']
+            .nunique()
             .reset_index()
-            .rename(columns={'InvoiceId': 'InvoiceCount'})
+            .rename(columns={'CustomerId': 'CustomerCount'})
         )
-        prod_freq['CustomerRate'] = prod_freq['InvoiceCount'] / fdf[
-            fdf['CustomerId'].isin(spec_customer_ids)
-        ]['InvoiceId'].nunique()
+        prod_freq['CustomerRate'] = prod_freq['CustomerCount'] / n_spec_customers
 
         expected_basket = prod_freq[prod_freq['CustomerRate'] >= basket_min_rate].sort_values(
             'CustomerRate', ascending=False
@@ -1599,18 +1581,18 @@ elif analysis == "Basket Analysis":
                 df = df.copy()
                 df['LineMargin'] = (df['PricePerUnit'] - df['TotalCostPerUnit']) * df['Quantity']
 
-            inv_bin = (
-                df.groupby(['InvoiceId', 'ProductId'])['Quantity']
-                .sum()
-                .unstack(fill_value=0)
+            # Build product list per invoice — much faster than full pivot
+            inv_products = (
+                df.groupby('InvoiceId')['ProductId']
+                .apply(lambda x: sorted(x.astype(str).unique().tolist()))
+                .reset_index()
             )
-            inv_bin = (inv_bin > 0).astype(int)
 
+            # Generate combos from invoice product lists
             combos = []
-            for _, row in inv_bin.iterrows():
-                bought = list(row[row == 1].index)
-                if len(bought) >= size:
-                    for combo in combinations(sorted(bought), size):
+            for prods in inv_products['ProductId']:
+                if len(prods) >= size:
+                    for combo in combinations(prods, size):
                         combos.append(combo)
 
             if not combos:
@@ -1618,30 +1600,31 @@ elif analysis == "Basket Analysis":
 
             combo_counts = pd.Series(combos).value_counts().head(n_results * 3)
 
+            # Build a lookup: invoice -> set of products
+            inv_prod_sets = inv_products.set_index('InvoiceId')['ProductId'].apply(set)
+
             rows = []
             for combo, inv_count in combo_counts.items():
                 combo_set = set(combo)
-                # Invoices with full basket
-                inv_mask = inv_bin[list(combo_set)].all(axis=1)
-                basket_invoices = inv_bin[inv_mask].index
+                basket_inv = inv_prod_sets[inv_prod_sets.apply(lambda s: combo_set.issubset(s))].index
 
                 basket_lines = df[
-                    df['InvoiceId'].isin(basket_invoices) &
-                    df['ProductId'].isin(combo_set)
+                    df['InvoiceId'].isin(basket_inv) &
+                    df['ProductId'].astype(str).isin(combo_set)
                 ]
-                cust_count = df[df['InvoiceId'].isin(basket_invoices)]['CustomerId'].nunique()
+                cust_count = df[df['InvoiceId'].isin(basket_inv)]['CustomerId'].nunique()
                 revenue    = basket_lines['LineRevenue'].sum()
                 margin     = basket_lines['LineMargin'].sum() if has_cost else None
-                avg_rev_per_inv = revenue / len(basket_invoices) if len(basket_invoices) > 0 else 0
+                avg_rev    = revenue / len(basket_inv) if len(basket_inv) > 0 else 0
 
                 rows.append({
-                    'Combo':           combo,
-                    'Products':        ' + '.join(str(p) for p in combo),
-                    'InvoiceCount':    inv_count,
-                    'CustomerCount':   cust_count,
-                    'BasketRevenue':   round(revenue, 0),
-                    'BasketMargin':    round(margin, 0) if margin is not None else None,
-                    'AvgRevenuePerInvoice': round(avg_rev_per_inv, 0),
+                    'Combo':              combo,
+                    'Products':           ' + '.join(str(p) for p in combo),
+                    'InvoiceCount':       inv_count,
+                    'CustomerCount':      cust_count,
+                    'BasketRevenue':      round(revenue, 0),
+                    'BasketMargin':       round(margin, 0) if margin is not None else None,
+                    'AvgRevenuePerInvoice': round(avg_rev, 0),
                 })
 
             return pd.DataFrame(rows)
@@ -1897,15 +1880,7 @@ elif analysis == "Basket Analysis":
 elif analysis == "Customer Specialty":
     st.markdown('<div class="section-header">Customer Specialty</div>', unsafe_allow_html=True)
 
-    # ── Controls ───────────────────────────────────────────────────────────────
-    # Detect categorical columns suitable for specialty grouping
-    cat_cols = [
-        c for c in fdf.columns
-        if str(fdf[c].dtype) in ('object', 'category')
-        and c not in ['CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate']
-        and fdf[c].nunique() < 200
-    ]
-
+    # cat_cols already defined globally above — use it directly
     col_ctrl, col_thresh = st.columns([1, 1])
     with col_ctrl:
         specialty_col = st.selectbox(
