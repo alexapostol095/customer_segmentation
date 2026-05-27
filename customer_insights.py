@@ -1658,6 +1658,38 @@ elif analysis == "Basket Analysis":
             display_df = exp_df.drop(columns=['Combo']).copy()
             if 'BasketMargin' in display_df.columns and display_df['BasketMargin'].isna().all():
                 display_df = display_df.drop(columns=['BasketMargin'])
+
+            # ── Assortment coverage ───────────────────────────────────────────
+            # Unique customers covered by at least one basket in the displayed list
+            all_basket_products = set()
+            for combo in exp_df['Combo']:
+                all_basket_products.update(combo)
+
+            covered_invoices = (
+                fdf[fdf['ProductId'].astype(str).isin(all_basket_products)]
+                .groupby('InvoiceId')['ProductId']
+                .apply(lambda x: set(x.astype(str)))
+            )
+
+            # Customers who appear in any invoice that contains at least one full basket
+            covered_customers = set()
+            for combo in exp_df['Combo']:
+                combo_set = set(combo)
+                basket_inv_ids = covered_invoices[
+                    covered_invoices.apply(lambda s: combo_set.issubset(s))
+                ].index
+                covered_customers.update(
+                    fdf[fdf['InvoiceId'].isin(basket_inv_ids)]['CustomerId'].unique()
+                )
+
+            total_customers = fdf['CustomerId'].nunique()
+            coverage_pct = len(covered_customers) / total_customers if total_customers > 0 else 0
+
+            c1, c2, c3 = st.columns(3)
+            with c1: metric_card("Baskets shown", str(len(exp_df)))
+            with c2: metric_card("Unique customers covered", f"{len(covered_customers):,}")
+            with c3: metric_card("% of total customers", f"{coverage_pct:.1%}")
+
             st.dataframe(display_df, width='stretch', hide_index=True)
 
             # ── Scatter plot ──────────────────────────────────────────────────
