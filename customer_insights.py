@@ -1680,6 +1680,18 @@ elif analysis == "Basket Analysis":
             if 'BasketMargin' in display_df.columns and display_df['BasketMargin'].isna().all():
                 display_df = display_df.drop(columns=['BasketMargin'])
 
+            # Add product names column if available
+            name_col = get_product_name_col(fdf)
+            if name_col is not None:
+                name_map = fdf.drop_duplicates('ProductId').set_index('ProductId')[name_col]
+                display_df.insert(
+                    display_df.columns.tolist().index('Products') + 1,
+                    'Product Names',
+                    exp_df['Combo'].apply(
+                        lambda combo: ' + '.join(str(name_map.get(p, p)) for p in combo)
+                    )
+                )
+
             # ── Assortment coverage ───────────────────────────────────────────
             # Unique customers covered by at least one basket in the displayed list
             all_basket_products = set()
