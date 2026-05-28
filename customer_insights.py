@@ -219,6 +219,27 @@ div[data-testid="stButton"] > button[kind="primary"] p {
 PALETTE = ["#c9a84c", "#3d5a80", "#98c1d9", "#e07a5f", "#3d405b",
            "#81b29a", "#f2cc8f", "#6d6875", "#b5838d", "#e5989b"]
 
+def get_product_name_col(df):
+    """Return the name of the product label column if available, else None."""
+    for col in ['Name', 'Description']:
+        if col in df.columns:
+            return col
+    return None
+
+def enrich_with_product_name(result_df, source_df, id_col='ProductId'):
+    """Insert a product name column after the ProductId column if Name/Description exists."""
+    name_col = get_product_name_col(source_df)
+    if name_col is None or id_col not in result_df.columns:
+        return result_df
+    name_map = source_df.drop_duplicates(id_col).set_index(id_col)[name_col]
+    result_df = result_df.copy()
+    result_df['ProductName'] = result_df[id_col].map(name_map)
+    # Insert right after the id column
+    idx = result_df.columns.tolist().index(id_col)
+    cols = result_df.columns.tolist()
+    cols.insert(idx + 1, cols.pop(cols.index('ProductName')))
+    return result_df[cols]
+
 def fmt_currency(v):
     if v >= 1_000_000:
         return f"€{v/1_000_000:.1f}M"
@@ -690,7 +711,7 @@ elif analysis == "Repeat Purchases":
         )
         top_repeat['TotalSpend']    = top_repeat['TotalSpend'].map(fmt_currency)
         top_repeat['AvgOrderCount'] = top_repeat['AvgOrderCount'].map('{:.1f}'.format)
-        st.dataframe(top_repeat, width='stretch', hide_index=True)
+        st.dataframe(enrich_with_product_name(top_repeat, fdf), width='stretch', hide_index=True)
 
     with tab2:
         rp_col = st.selectbox(
@@ -752,7 +773,7 @@ elif analysis == "Repeat Purchases":
 
             cust_repeats = cust_repeats.sort_values('OrderCount', ascending=False)
             cust_repeats['TotalSpend'] = cust_repeats['TotalSpend'].map(fmt_currency)
-            st.dataframe(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']],
+            st.dataframe(enrich_with_product_name(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']], fdf),
                          width='stretch', hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -866,7 +887,7 @@ elif analysis == "Basket Analysis":
         with col_b1:
             disp_basket = expected_basket.copy()
             disp_basket['CustomerRate'] = disp_basket['CustomerRate'].map('{:.1%}'.format)
-            st.dataframe(disp_basket, width='stretch', hide_index=True)
+            st.dataframe(enrich_with_product_name(disp_basket, fdf), width='stretch', hide_index=True)
 
         with col_b2:
             top_basket = expected_basket.head(20)
@@ -961,7 +982,7 @@ elif analysis == "Basket Analysis":
                 st.markdown("**Products this customer has never bought (cross-sell opportunities)**")
                 miss_df = expected_basket[expected_basket['ProductId'].isin(missing)].copy()
                 miss_df['CustomerRate'] = miss_df['CustomerRate'].map('{:.1%}'.format)
-                st.dataframe(miss_df, width='stretch', hide_index=True)
+                st.dataframe(enrich_with_product_name(miss_df, fdf), width='stretch', hide_index=True)
             else:
                 st.success("This customer buys everything in the expected basket.")
 
@@ -1028,7 +1049,7 @@ elif analysis == "Basket Analysis":
                 st.markdown(f"**Basket around `{anchor}`**")
                 disp_anchor = anchor_basket.copy()
                 disp_anchor['CoRate'] = disp_anchor['CoRate'].map('{:.1%}'.format)
-                st.dataframe(disp_anchor, width='stretch', hide_index=True)
+                st.dataframe(enrich_with_product_name(disp_anchor, fdf), width='stretch', hide_index=True)
             with col_b2:
                 top_anchor = anchor_basket.head(20)
                 fig, ax = plt.subplots(figsize=(6, max(3, len(top_anchor) * 0.38)))
@@ -1131,7 +1152,7 @@ elif analysis == "Basket Analysis":
                         st.markdown("**Products this customer hasn't bought (cross-sell opportunities)**")
                         miss_df = anchor_basket[anchor_basket['ProductId'].isin(missing_anchor)].copy()
                         miss_df['CoRate'] = miss_df['CoRate'].map('{:.1%}'.format)
-                        st.dataframe(miss_df, width='stretch', hide_index=True)
+                        st.dataframe(enrich_with_product_name(miss_df, fdf), width='stretch', hide_index=True)
                     else:
                         st.success("This customer buys everything in the expected basket.")
             else:
@@ -2291,9 +2312,12 @@ elif analysis == "KVI Classification":
         sub['KVI_Score']                 = sub['KVI_Score'].map('{:.3f}'.format)
         sub['Corr_Score']                = sub['Corr_Score'].map('{:.4f}'.format)
         st.dataframe(
-            sub[['ProductId', 'Quantity', 'Price', 'Revenue', 'UniqueCustomers',
-                 'PurchaseCount', 'Demand_Proportion', 'Revenue_Proportion',
-                 'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
+            enrich_with_product_name(
+                sub[['ProductId', 'Quantity', 'Price', 'Revenue', 'UniqueCustomers',
+                     'PurchaseCount', 'Demand_Proportion', 'Revenue_Proportion',
+                     'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
+                fdf
+            ),
             width='stretch', hide_index=True
         )
 
@@ -2352,7 +2376,7 @@ elif analysis == "KVI Classification":
                   'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']] = \
             score_df[['Demand_Proportion_Scaled', 'Revenue_Proportion_Scaled',
                       'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']].round(3)
-        st.dataframe(score_df, width='stretch', hide_index=True)
+        st.dataframe(enrich_with_product_name(score_df, fdf), width='stretch', hide_index=True)
 
     # ── Export ─────────────────────────────────────────────────────────────────
     st.markdown("---")
