@@ -262,6 +262,21 @@ def metric_card(label, value, sub=""):
         {'<div class="sub">' + sub + '</div>' if sub else ''}
     </div>""", unsafe_allow_html=True)
 
+def show_df(data, hide_index=True):
+    """Display a full-width dataframe, compatible with both old Streamlit
+    (use_container_width=True) and new Streamlit (width='stretch') APIs."""
+    try:
+        st.dataframe(data, width='stretch', hide_index=hide_index)
+    except TypeError:
+        st.dataframe(data, use_container_width=True, hide_index=hide_index)
+
+def show_chart(fig):
+    """Display a full-width Plotly chart, compatible with both Streamlit width APIs."""
+    try:
+        st.plotly_chart(fig, width='stretch')
+    except TypeError:
+        st.plotly_chart(fig, use_container_width=True)
+
 @st.cache_data(show_spinner=False)
 def load_and_prepare(file_bytes):
     df = pd.read_csv(file_bytes, low_memory=False) if file_bytes.name.endswith(".csv") else pd.read_excel(file_bytes)
@@ -381,19 +396,27 @@ def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile
     filtered = df[df['ProductId'].isin(product_ids)]
     grouped = filtered.groupby('InvoiceId')['ProductId'].apply(list)
 
-    rows, cols, data = [], [], []
+    # Vectorized pair construction per invoice (numpy outer-product of indices,
+    # instead of a nested Python double loop)
+    row_chunks, col_chunks = [], []
     for products in grouped:
-        for i in range(len(products)):
-            for j in range(len(products)):
-                rows.append(product_to_idx[products[i]])
-                cols.append(product_to_idx[products[j]])
-                data.append(1)
+        idxs = np.array([product_to_idx[p] for p in products])
+        n = len(idxs)
+        if n == 0:
+            continue
+        row_chunks.append(np.repeat(idxs, n))
+        col_chunks.append(np.tile(idxs, n))
 
-    if rows:
-        Q = coo_matrix((data, (rows, cols)), shape=(n_products, n_products)).toarray()
-        Q_j = Q.sum(axis=1)
+    if row_chunks:
+        rows = np.concatenate(row_chunks)
+        cols = np.concatenate(col_chunks)
+        data = np.ones(len(rows), dtype=np.float64)
+        Q = coo_matrix((data, (rows, cols)), shape=(n_products, n_products)).tocsr()
+        Q_j = np.asarray(Q.sum(axis=1)).flatten()
         Q_j[Q_j == 0] = 1
-        score = (Q / Q_j).sum(axis=1) / n_products
+        from scipy.sparse import diags
+        Q_norm = Q @ diags(1.0 / Q_j)
+        score = np.asarray(Q_norm.sum(axis=1)).flatten() / n_products
         product_score_map = {p: score[i] for i, p in enumerate(product_ids)}
     else:
         product_score_map = {}
@@ -666,7 +689,7 @@ elif analysis == "Category Breakdown":
         grp_summary['RevenueShare'] = (grp_summary['Revenue'] / grp_summary['Revenue'].sum()).map('{:.1%}'.format)
         grp_summary['AvgOrderValue'] = grp_summary['AvgOrderValue'].map(lambda x: f"€{x:,.2f}")
         grp_summary['Revenue']       = grp_summary['Revenue'].map(fmt_currency)
-        st.dataframe(grp_summary, width='stretch', hide_index=True)
+        show_df(grp_summary)
 
     with tab2:
         cust_id = st.selectbox("Select customer", sorted(fdf['CustomerId'].unique().tolist()), key="cb_cust")
@@ -685,7 +708,7 @@ elif analysis == "Category Breakdown":
             'Spend': cust_grp.map(fmt_currency).values,
             'Share': cust_grp_share.map('{:.1%}'.format).values,
         })
-        st.dataframe(cust_grp_df[cust_grp_df['Spend'] != '€0'], width='stretch', hide_index=True)
+        show_df(cust_grp_df[cust_grp_df['Spend'] != '€0'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 4 — REPEAT PURCHASES
@@ -711,7 +734,7 @@ elif analysis == "Repeat Purchases":
         )
         top_repeat['TotalSpend']    = top_repeat['TotalSpend'].map(fmt_currency)
         top_repeat['AvgOrderCount'] = top_repeat['AvgOrderCount'].map('{:.1f}'.format)
-        st.dataframe(enrich_with_product_name(top_repeat, fdf), width='stretch', hide_index=True)
+        show_df(enrich_with_product_name(top_repeat, fdf))
 
     with tab2:
         rp_col = st.selectbox(
@@ -742,7 +765,7 @@ elif analysis == "Repeat Purchases":
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown(f"**Repeat rate by {rp_col}**")
-            st.dataframe(repeat_grp, width='stretch', hide_index=True)
+            show_df(repeat_grp)
         with col2:
             repeat_grp2 = (
                 order_counts_df.groupby(rp_col)
@@ -773,8 +796,7 @@ elif analysis == "Repeat Purchases":
 
             cust_repeats = cust_repeats.sort_values('OrderCount', ascending=False)
             cust_repeats['TotalSpend'] = cust_repeats['TotalSpend'].map(fmt_currency)
-            st.dataframe(enrich_with_product_name(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']], fdf),
-                         width='stretch', hide_index=True)
+            show_df(enrich_with_product_name(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']], fdf))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 5 — BASKET ANALYSIS
@@ -887,7 +909,7 @@ elif analysis == "Basket Analysis":
         with col_b1:
             disp_basket = expected_basket.copy()
             disp_basket['CustomerRate'] = disp_basket['CustomerRate'].map('{:.1%}'.format)
-            st.dataframe(enrich_with_product_name(disp_basket, fdf), width='stretch', hide_index=True)
+            show_df(enrich_with_product_name(disp_basket, fdf))
 
         with col_b2:
             top_basket = expected_basket.head(20)
@@ -951,10 +973,9 @@ elif analysis == "Basket Analysis":
         leakage_display = leakage.copy()
         leakage_display['TotalSpend']   = leakage_display['TotalSpend'].map(fmt_currency)
         leakage_display['CoverageRate'] = leakage_display['CoverageRate'].map('{:.1%}'.format)
-        st.dataframe(
+        show_df(
             leakage_display[['CustomerId', 'TotalSpend', 'BasketItemsBought',
-                              'ItemsMissing', 'CoverageRate', 'MissingProducts']],
-            width='stretch', hide_index=True
+                              'ItemsMissing', 'CoverageRate', 'MissingProducts']]
         )
 
         # Individual customer leakage drill-down
@@ -982,7 +1003,7 @@ elif analysis == "Basket Analysis":
                 st.markdown("**Products this customer has never bought (cross-sell opportunities)**")
                 miss_df = expected_basket[expected_basket['ProductId'].isin(missing)].copy()
                 miss_df['CustomerRate'] = miss_df['CustomerRate'].map('{:.1%}'.format)
-                st.dataframe(enrich_with_product_name(miss_df, fdf), width='stretch', hide_index=True)
+                show_df(enrich_with_product_name(miss_df, fdf))
             else:
                 st.success("This customer buys everything in the expected basket.")
 
@@ -1049,7 +1070,7 @@ elif analysis == "Basket Analysis":
                 st.markdown(f"**Basket around `{anchor}`**")
                 disp_anchor = anchor_basket.copy()
                 disp_anchor['CoRate'] = disp_anchor['CoRate'].map('{:.1%}'.format)
-                st.dataframe(enrich_with_product_name(disp_anchor, fdf), width='stretch', hide_index=True)
+                show_df(enrich_with_product_name(disp_anchor, fdf))
             with col_b2:
                 top_anchor = anchor_basket.head(20)
                 fig, ax = plt.subplots(figsize=(6, max(3, len(top_anchor) * 0.38)))
@@ -1119,10 +1140,9 @@ elif analysis == "Basket Analysis":
                 anchor_leakage_display = anchor_leakage.copy()
                 anchor_leakage_display['TotalSpend']   = anchor_leakage_display['TotalSpend'].map(fmt_currency)
                 anchor_leakage_display['CoverageRate'] = anchor_leakage_display['CoverageRate'].map('{:.1%}'.format)
-                st.dataframe(
+                show_df(
                     anchor_leakage_display[['CustomerId', 'TotalSpend', 'BasketItemsBought',
-                                            'ItemsMissing', 'CoverageRate', 'MissingProducts']],
-                    width='stretch', hide_index=True
+                                            'ItemsMissing', 'CoverageRate', 'MissingProducts']]
                 )
 
                 st.markdown("---")
@@ -1152,7 +1172,7 @@ elif analysis == "Basket Analysis":
                         st.markdown("**Products this customer hasn't bought (cross-sell opportunities)**")
                         miss_df = anchor_basket[anchor_basket['ProductId'].isin(missing_anchor)].copy()
                         miss_df['CoRate'] = miss_df['CoRate'].map('{:.1%}'.format)
-                        st.dataframe(enrich_with_product_name(miss_df, fdf), width='stretch', hide_index=True)
+                        show_df(enrich_with_product_name(miss_df, fdf))
                     else:
                         st.success("This customer buys everything in the expected basket.")
             else:
@@ -1280,44 +1300,51 @@ elif analysis == "Basket Analysis":
             )
             inv_bin = (inv_bin > 0).astype(int)
 
-            pairs = []
-            for _, row in inv_bin.iterrows():
-                bought = list(row[row == 1].index)
-                for combo in combinations(sorted(bought), 2):
-                    pairs.append(combo)
-
-            if not pairs:
+            if inv_bin.shape[1] < 2 or inv_bin.shape[0] == 0:
                 return []
 
-            pair_counts = pd.Series(pairs).value_counts()
+            products = inv_bin.columns.tolist()
+            mat = inv_bin.values
+
+            # Vectorized pairwise co-occurrence via matrix multiplication —
+            # replaces the row-by-row iterrows() + combinations() loop
+            co_matrix = mat.T @ mat
+            n = len(products)
+            iu = np.triu_indices(n, k=1)
+            pair_counts_arr = co_matrix[iu]
+            order = np.argsort(-pair_counts_arr)
+
             suggestions = []
             used_products = set()
 
-            for combo, count in pair_counts.items():
-                # Skip if any product in the core pair already used
-                if any(p in used_products for p in combo):
+            for idx in order:
+                count = pair_counts_arr[idx]
+                if count == 0:
+                    break
+                i, j = iu[0][idx], iu[1][idx]
+                p1, p2 = products[i], products[j]
+                if p1 in used_products or p2 in used_products:
                     continue
 
+                combo = tuple(sorted([p1, p2]))
                 combo_set = set(combo)
 
-                # Find top companion not already used
-                companion_counts = {}
-                for _, row in inv_bin.iterrows():
-                    if all(p in row.index and row[p] == 1 for p in combo_set):
-                        for p in row[row == 1].index:
-                            if p not in combo_set and p not in used_products:
-                                companion_counts[p] = companion_counts.get(p, 0) + 1
+                # Vectorized companion lookup — invoices containing both p1 and p2,
+                # replaces the per-suggestion full iterrows() re-scan
+                mask = (mat[:, i] == 1) & (mat[:, j] == 1)
+                companion_counts = pd.Series(mat[mask].sum(axis=0), index=products)
+                companion_counts = companion_counts.drop(labels=list(combo_set), errors='ignore')
+                companion_counts = companion_counts[~companion_counts.index.isin(used_products)]
+                companion_counts = companion_counts[companion_counts > 0].sort_values(ascending=False)
+                top_companion = [companion_counts.index[0]] if len(companion_counts) > 0 else []
 
-                top_companion = sorted(companion_counts, key=companion_counts.get, reverse=True)[:1]
-                basket_products_sug = list(combo_set) + top_companion  # exactly 3 products
-
-                # Mark all as used
+                basket_products_sug = list(combo_set) + top_companion
                 used_products.update(basket_products_sug)
 
                 suggestions.append({
                     'name':          f"Basket {' + '.join(str(p) for p in combo)}",
                     'products':      [str(p) for p in basket_products_sug],
-                    'invoice_count': count,
+                    'invoice_count': int(count),
                 })
 
                 if len(suggestions) >= n_suggestions:
@@ -1511,10 +1538,10 @@ elif analysis == "Basket Analysis":
             with c2: metric_card("Unclassified", str((assignment_df['AssignedBasket'] == 'Unclassified').sum()))
             with c3: metric_card("No Segmentation", str((assignment_df['AssignedBasket'] == 'No Segmentation').sum()))
 
-            st.dataframe(summary, width='stretch', hide_index=True)
+            show_df(summary)
 
             st.markdown("**Full customer assignment table**")
-            st.dataframe(assignment_df, width='stretch', hide_index=True)
+            show_df(assignment_df)
 
             # ── Confirm to use in KVI ──────────────────────────────────────────
             st.markdown("---")
@@ -1626,13 +1653,21 @@ elif analysis == "Basket Analysis":
 
             combo_counts = pd.Series(combos).value_counts().head(n_results * 3)
 
-            # Build a lookup: invoice -> set of products
-            inv_prod_sets = inv_products.set_index('InvoiceId')['ProductId'].apply(set)
+            # Inverted index: product -> set of invoices containing it.
+            # Lets us find "invoices with all basket products" via fast set
+            # intersection instead of scanning every invoice per combo.
+            prod_to_invoices = (
+                df.assign(_p=df['ProductId'].astype(str))
+                .groupby('_p')['InvoiceId']
+                .apply(set)
+                .to_dict()
+            )
 
             rows = []
             for combo, inv_count in combo_counts.items():
                 combo_set = set(combo)
-                basket_inv = inv_prod_sets[inv_prod_sets.apply(lambda s: combo_set.issubset(s))].index
+                invoice_sets = [prod_to_invoices.get(p, set()) for p in combo_set]
+                basket_inv = set.intersection(*invoice_sets) if invoice_sets else set()
 
                 basket_lines = df[
                     df['InvoiceId'].isin(basket_inv) &
@@ -1723,7 +1758,7 @@ elif analysis == "Basket Analysis":
             with c2: metric_card("Unique customers covered", f"{len(covered_customers):,}")
             with c3: metric_card("% of total customers", f"{coverage_pct:.1%}")
 
-            st.dataframe(display_df, width='stretch', hide_index=True)
+            show_df(display_df)
 
             # ── Scatter plot ──────────────────────────────────────────────────
             st.markdown("---")
@@ -1806,7 +1841,7 @@ elif analysis == "Basket Analysis":
                 margin=dict(l=60, r=60, t=60, b=60),
             )
 
-            st.plotly_chart(fig, width='stretch')
+            show_chart(fig)
 
             # ── Customer Explorer ─────────────────────────────────────────────
             st.markdown("---")
@@ -1920,7 +1955,7 @@ elif analysis == "Basket Analysis":
                     cust_agg['TotalMargin'] = cust_agg['TotalMargin'].map(fmt_currency)
 
                 st.markdown("**Customers who ordered this basket**")
-                st.dataframe(cust_agg, width='stretch', hide_index=True)
+                show_df(cust_agg)
 
                 # What else do these customers buy outside the basket
                 st.markdown("**What else do these customers commonly buy?**")
@@ -1943,7 +1978,7 @@ elif analysis == "Basket Analysis":
                 other['TotalRevenue'] = other['TotalRevenue'].map(fmt_currency)
                 if has_cost_exp and 'TotalMargin' in other.columns:
                     other['TotalMargin'] = other['TotalMargin'].map(fmt_currency)
-                st.dataframe(other, width='stretch', hide_index=True)
+                show_df(other)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 6 — CUSTOMER SPECIALTY
@@ -2030,7 +2065,7 @@ elif analysis == "Customer Specialty":
         display_summary['AvgShare']     = display_summary['AvgShare'].map('{:.1%}'.format)
         display_summary['AvgRecency']   = display_summary['AvgRecency'].map('{:.0f} days'.format)
         display_summary['AvgFrequency'] = display_summary['AvgFrequency'].map('{:.1f}'.format)
-        st.dataframe(display_summary, width='stretch', hide_index=True)
+        show_df(display_summary)
 
         st.markdown("")
         col_a, col_b = st.columns(2)
@@ -2087,10 +2122,9 @@ elif analysis == "Customer Specialty":
         display_customers['SpecialtyShare']  = display_customers['SpecialtyShare'].map('{:.1%}'.format)
         display_customers['Recency']         = display_customers['Recency'].map('{:.0f} days'.format)
 
-        st.dataframe(
+        show_df(
             display_customers[['CustomerId', 'Specialty', 'SpecialtyShare',
-                                'TotalSpend', 'Frequency', 'Recency']],
-            width='stretch', hide_index=True
+                                'TotalSpend', 'Frequency', 'Recency']]
         )
 
         st.markdown("---")
@@ -2160,9 +2194,8 @@ elif analysis == "Customer Specialty":
             )
             top_spec_custs['TotalSpend']     = top_spec_custs['TotalSpend'].map(fmt_currency)
             top_spec_custs['SpecialtyShare'] = top_spec_custs['SpecialtyShare'].map('{:.1%}'.format)
-            st.dataframe(
-                top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']],
-                width='stretch', hide_index=True
+            show_df(
+                top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']]
             )
 
         with col_b:
@@ -2204,8 +2237,7 @@ elif analysis == "Customer Specialty":
             'Spend':       cust_grp_spend.map(fmt_currency).values,
             'Share':       cust_grp_share.map('{:.1%}'.format).values,
         })
-        st.dataframe(cust_display[cust_display['Spend'] != '€0'],
-                     width='stretch', hide_index=True)
+        show_df(cust_display[cust_display['Spend'] != '€0'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 7 — KVI CLASSIFICATION
@@ -2323,14 +2355,13 @@ elif analysis == "KVI Classification":
         sub['UniqueCustomers_Proportion'] = sub['UniqueCustomers_Proportion'].map('{:.2%}'.format)
         sub['KVI_Score']                 = sub['KVI_Score'].map('{:.3f}'.format)
         sub['Corr_Score']                = sub['Corr_Score'].map('{:.4f}'.format)
-        st.dataframe(
+        show_df(
             enrich_with_product_name(
                 sub[['ProductId', 'Quantity', 'Price', 'Revenue', 'UniqueCustomers',
                      'PurchaseCount', 'Demand_Proportion', 'Revenue_Proportion',
                      'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
                 fdf
-            ),
-            width='stretch', hide_index=True
+            )
         )
 
     with tab1:
@@ -2388,7 +2419,7 @@ elif analysis == "KVI Classification":
                   'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']] = \
             score_df[['Demand_Proportion_Scaled', 'Revenue_Proportion_Scaled',
                       'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']].round(3)
-        st.dataframe(enrich_with_product_name(score_df, fdf), width='stretch', hide_index=True)
+        show_df(enrich_with_product_name(score_df, fdf))
 
     # ── Export ─────────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -2670,7 +2701,7 @@ elif analysis == "Pricing Simulation":
         seg_display = seg_results.copy()
         for col in ['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta']:
             seg_display[col] = seg_display[col].map(fmt_currency)
-        st.dataframe(seg_display, width='stretch', hide_index=True)
+        show_df(seg_display)
 
         # Per-category breakdown
         st.markdown("**Impact by product category**")
@@ -2692,7 +2723,7 @@ elif analysis == "Pricing Simulation":
         cat_display = cat_results.copy()
         for col in ['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta']:
             cat_display[col] = cat_display[col].map(fmt_currency)
-        st.dataframe(cat_display, width='stretch', hide_index=True)
+        show_df(cat_display)
 
         # Charts
         st.markdown("**Revenue & Margin delta by segment**")
