@@ -1936,7 +1936,7 @@ elif analysis == "KVI Classification":
             horizontal=True, key="kvi_seg_source"
         )
     else:
-        st.caption("No segmentation confirmed yet. Go to Customer Specialty → Customer List to confirm one, or select a group manually below.")
+        st.caption("No segmentation confirmed yet. Go to Customer Specialty → Customer List or Basket Segmentation to confirm one, or select a group manually below.")
         seg_source = st.radio(
             "Run on", ["Custom group", "All customers"],
             horizontal=True, key="kvi_seg_source"
