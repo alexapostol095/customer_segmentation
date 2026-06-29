@@ -303,7 +303,9 @@ def load_and_prepare(file_bytes):
     return df
 
 @st.cache_data(show_spinner=False)
-def compute_base(df):
+def compute_base(df, _fingerprint):
+    """_fingerprint is a cheap string used for cache invalidation instead
+    of letting Streamlit hash the full 456k-row dataframe on every rerun."""
     snap = df['CreatedDate'].max() + pd.Timedelta(days=1)
 
     rfm = (
@@ -331,7 +333,7 @@ def compute_base(df):
     return rfm, prod_repeat
 
 @st.cache_data(show_spinner=False)
-def compute_group_matrices(df, group_col):
+def compute_group_matrices(df, group_col, _fingerprint=''):
     spend = (
         df.groupby(['CustomerId', group_col])['LineRevenue']
         .sum().unstack(fill_value=0)
@@ -343,7 +345,7 @@ def compute_group_matrices(df, group_col):
     return spend, share, binary, sim_df
 
 @st.cache_data(show_spinner=False)
-def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile=75):
+def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile=75, _fingerprint=''):
     df = order_lines.copy()
 
     quantity = df.groupby('ProductId')['Quantity'].sum().reset_index()
@@ -479,7 +481,7 @@ with st.spinner("Loading data…"):
     df = load_and_prepare(uploaded)
 
 with st.spinner("Computing metrics…"):
-    rfm, prod_repeat = compute_base(df)
+    rfm, prod_repeat = compute_base(df, f"{len(df)}_{df['LineRevenue'].sum():.2f}")
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -538,33 +540,47 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{len(df):,} rows · {df['CustomerId'].nunique():,} customers</span>", unsafe_allow_html=True)
 
+@st.cache_data(show_spinner=False)
+def apply_filters(df, date_range, selected_customers, cat_filters_tuple, confirmed_labels_key):
+    """Returns filtered fdf and cat_cols. Cached so this only reruns when
+    filters actually change, not on every widget interaction."""
+    fdf = df.copy()
+
+    if date_range and len(date_range) == 2:
+        start, end = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
+        fdf = fdf[(fdf['CreatedDate'] >= start) & (fdf['CreatedDate'] <= end)]
+
+    if selected_customers:
+        fdf = fdf[fdf['CustomerId'].isin(selected_customers)]
+
+    for col, vals in cat_filters_tuple:
+        if vals:
+            fdf = fdf[fdf[col].astype(str).isin(vals)]
+
+    return fdf
+
 # ── Apply filters ──────────────────────────────────────────────────────────────
-fdf = df.copy()
+# Convert cat_filters dict to a hashable tuple for caching
+cat_filters_tuple = tuple((k, tuple(v)) for k, v in cat_filters.items() if v)
+fdf = apply_filters(
+    df,
+    tuple(date_range) if date_range and len(date_range) == 2 else None,
+    tuple(selected_customers),
+    cat_filters_tuple,
+    # Pass a hash of the labels so cache busts when segmentation changes
+    str(hash(str(st.session_state.get('confirmed_specialty', {}).get('n_customers', ''))))
+)
 
-if date_range and len(date_range) == 2:
-    start, end = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
-    fdf = fdf[(fdf['CreatedDate'] >= start) & (fdf['CreatedDate'] <= end)]
-
-if selected_customers:
-    fdf = fdf[fdf['CustomerId'].isin(selected_customers)]
-
-for col, vals in cat_filters.items():
-    if vals:
-        fdf = fdf[fdf[col].astype(str).isin(vals)]
-
-# Recompute base metrics on filtered data
-rfm, prod_repeat = compute_base(fdf)
-
-# ── Merge confirmed specialty labels into fdf if available ─────────────────
+# Merge confirmed specialty labels into fdf
 if 'confirmed_specialty' in st.session_state:
-    _labels = st.session_state['confirmed_specialty']['labels'].rename(
-        columns={'Specialty': 'Customer Cluster'}
-    ).copy()
+    _labels = st.session_state['confirmed_specialty']['labels'].copy()
+    if 'Specialty' in _labels.columns and 'Customer Cluster' not in _labels.columns:
+        _labels = _labels.rename(columns={'Specialty': 'Customer Cluster'})
     _labels['CustomerId'] = _labels['CustomerId'].astype(str)
     fdf = fdf.merge(_labels, on='CustomerId', how='left')
     fdf['Customer Cluster'] = fdf['Customer Cluster'].fillna('Unassigned')
 
-# Helper: detect categorical columns available for grouping
+@st.cache_data(show_spinner=False)
 def get_cat_cols(df):
     id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
     return [
@@ -578,6 +594,11 @@ def get_cat_cols(df):
         )
     ]
 
+# Lightweight fingerprint — avoids Streamlit hashing the full 456k-row dataframe
+# (~440ms overhead) on every rerun for each cached function call
+_fdf_fp = f"{len(fdf)}_{fdf['LineRevenue'].sum():.2f}"
+
+rfm, prod_repeat = compute_base(fdf, _fdf_fp)
 cat_cols = get_cat_cols(fdf)
 
 # ══════════════════════════════════════════════════════════════════════════════
