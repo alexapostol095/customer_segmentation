@@ -520,9 +520,9 @@ with st.sidebar:
         "Overview",
         "Category Breakdown",
         "Repeat Purchases",
+        "Customer Specialty",
         "Basket Exploration",
         "Basket Segmentation",
-        "Customer Specialty",
         "KVI Classification",
         "Pricing Simulation",
     ])
@@ -1643,22 +1643,21 @@ elif analysis == "Basket Exploration":
 elif analysis == "Customer Specialty":
     st.markdown('<div class="section-header">Customer Specialty</div>', unsafe_allow_html=True)
 
-    # cat_cols already defined globally above — use it directly
     col_ctrl, col_thresh = st.columns([1, 1])
     with col_ctrl:
         specialty_col = st.selectbox(
             "Base specialty on",
             cat_cols,
             index=cat_cols.index('MainGroup') if 'MainGroup' in cat_cols else 0,
-                help="The column whose dominant value determines a customer's specialty"
-            )
-        with col_thresh:
-            threshold = st.slider(
-                "Specialist threshold (min spend share)",
-                min_value=10, max_value=80, value=40, step=5,
-                format="%d%%",
-                help="Customers below this share in their top group are labelled Generalist"
-            ) / 100
+            help="The column whose dominant value determines a customer's specialty"
+        )
+    with col_thresh:
+        threshold = st.slider(
+            "Specialist threshold (min spend share)",
+            min_value=10, max_value=80, value=40, step=5,
+            format="%d%%",
+            help="Customers below this share in their top group are labelled Generalist"
+        ) / 100
 
         # ── Compute specialty per customer ─────────────────────────────────────────
         spend_by_col = (
