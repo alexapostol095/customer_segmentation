@@ -2178,11 +2178,11 @@ elif analysis == "Pricing Simulation":
         )
     with col_s2:
         kvi_col_sim = st.selectbox(
-            "Product category column (columns)",
-            ["KVI Classification"] + cat_cols,
-            key="sim_kvi_col",
-            help="Use 'KVI Classification' to use KVI/Core/Slow Mover categories from the KVI page, or pick any column"
-        )
+    "Product category column (columns) — optional",
+    ["— None (blanket rate) —", "KVI Classification"] + cat_cols,
+    key="sim_kvi_col",
+    help="Leave as 'None' for a single blanket rate per segment row, or pick a column to break down by product category"
+)
     with col_s3:
         # Date range for baseline
         if 'CreatedDate' in fdf.columns:
@@ -2216,7 +2216,10 @@ elif analysis == "Pricing Simulation":
         _df = sim_df_hash.copy()
         _df['LineMargin'] = (_df['PricePerUnit'] - _df['TotalCostPerUnit']) * _df['Quantity']
 
-        if kvi_col == "KVI Classification":
+        if kvi_col == "— None (blanket rate) —":
+            _df['ProductCategory'] = 'All Products'
+            cats = ['All Products']
+        elif kvi_col == "KVI Classification":
             kvi_result = run_kvi_classification(_df)
             prod_cat_map = kvi_result.set_index('ProductId')['Category'].to_dict()
             _df['ProductCategory'] = _df['ProductId'].map(prod_cat_map).fillna('Unclassified')
@@ -2278,7 +2281,8 @@ elif analysis == "Pricing Simulation":
     header_cols = st.columns([1.5] + [1] * len(prod_categories))
     header_cols[0].markdown(f"**{seg_col_sim}**")
     for i, cat in enumerate(prod_categories):
-        header_cols[i + 1].markdown(f"**{cat}**")
+        label = "**% Change**" if kvi_col_sim == "— None (blanket rate) —" else f"**{cat}**"
+        header_cols[i + 1].markdown(label)
 
     price_changes = {}
     for seg in seg_values:
