@@ -1659,241 +1659,241 @@ elif analysis == "Customer Specialty":
             help="Customers below this share in their top group are labelled Generalist"
         ) / 100
 
-        # ── Compute specialty per customer ─────────────────────────────────────────
-        spend_by_col = (
-            fdf.groupby(['CustomerId', specialty_col])['LineRevenue']
-            .sum()
-            .unstack(fill_value=0)
+    # ── Compute specialty per customer ─────────────────────────────────────────
+    spend_by_col = (
+        fdf.groupby(['CustomerId', specialty_col])['LineRevenue']
+        .sum()
+        .unstack(fill_value=0)
+    )
+    share_by_col = spend_by_col.div(spend_by_col.sum(axis=1), axis=0)
+
+    specialty_df = pd.DataFrame({
+        'Specialty':      share_by_col.idxmax(axis=1),
+        'SpecialtyShare': share_by_col.max(axis=1),
+        'TotalSpend':     spend_by_col.sum(axis=1),
+    }).reset_index()
+
+    specialty_df['Specialty'] = specialty_df.apply(
+        lambda r: r['Specialty'] if r['SpecialtyShare'] >= threshold else 'Generalist',
+        axis=1
+    )
+
+    # Merge in order/recency info
+    specialty_df = specialty_df.merge(
+        rfm[['CustomerId', 'Recency', 'Frequency']], on='CustomerId', how='left'
+    )
+
+    n_specialists  = (specialty_df['Specialty'] != 'Generalist').sum()
+    n_generalists  = (specialty_df['Specialty'] == 'Generalist').sum()
+    n_specialties  = specialty_df[specialty_df['Specialty'] != 'Generalist']['Specialty'].nunique()
+
+    # ── Top metrics ────────────────────────────────────────────────────────────
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: metric_card("Total Customers", str(len(specialty_df)))
+    with c2: metric_card("Specialists", str(n_specialists))
+    with c3: metric_card("Generalists", str(n_generalists))
+    with c4: metric_card("Distinct Specialties", str(n_specialties))
+
+    st.markdown("")
+
+    # ── Tab layout ─────────────────────────────────────────────────────────────
+    tab1, tab2, tab3 = st.tabs(["Specialty Overview", "Customer List", "Drill-down"])
+
+    with tab1:
+        specialty_summary = (
+            specialty_df.groupby('Specialty')
+            .agg(
+                Customers    =('CustomerId',      'count'),
+                TotalSpend   =('TotalSpend',      'sum'),
+                AvgSpend     =('TotalSpend',      'mean'),
+                AvgShare     =('SpecialtyShare',  'mean'),
+                AvgRecency   =('Recency',         'mean'),
+                AvgFrequency =('Frequency',       'mean'),
+            )
+            .sort_values('TotalSpend', ascending=False)
+            .reset_index()
         )
-        share_by_col = spend_by_col.div(spend_by_col.sum(axis=1), axis=0)
 
-        specialty_df = pd.DataFrame({
-            'Specialty':      share_by_col.idxmax(axis=1),
-            'SpecialtyShare': share_by_col.max(axis=1),
-            'TotalSpend':     spend_by_col.sum(axis=1),
-        }).reset_index()
-
-        specialty_df['Specialty'] = specialty_df.apply(
-            lambda r: r['Specialty'] if r['SpecialtyShare'] >= threshold else 'Generalist',
-            axis=1
-        )
-
-        # Merge in order/recency info
-        specialty_df = specialty_df.merge(
-            rfm[['CustomerId', 'Recency', 'Frequency']], on='CustomerId', how='left'
-        )
-
-        n_specialists  = (specialty_df['Specialty'] != 'Generalist').sum()
-        n_generalists  = (specialty_df['Specialty'] == 'Generalist').sum()
-        n_specialties  = specialty_df[specialty_df['Specialty'] != 'Generalist']['Specialty'].nunique()
-
-        # ── Top metrics ────────────────────────────────────────────────────────────
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: metric_card("Total Customers", str(len(specialty_df)))
-        with c2: metric_card("Specialists", str(n_specialists))
-        with c3: metric_card("Generalists", str(n_generalists))
-        with c4: metric_card("Distinct Specialties", str(n_specialties))
+        # Format for display
+        display_summary = specialty_summary.copy()
+        display_summary['TotalSpend']   = display_summary['TotalSpend'].map(fmt_currency)
+        display_summary['AvgSpend']     = display_summary['AvgSpend'].map(fmt_currency)
+        display_summary['AvgShare']     = display_summary['AvgShare'].map('{:.1%}'.format)
+        display_summary['AvgRecency']   = display_summary['AvgRecency'].map('{:.0f} days'.format)
+        display_summary['AvgFrequency'] = display_summary['AvgFrequency'].map('{:.1f}'.format)
+        show_df(display_summary)
 
         st.markdown("")
+        col_a, col_b = st.columns(2)
 
-        # ── Tab layout ─────────────────────────────────────────────────────────────
-        tab1, tab2, tab3 = st.tabs(["Specialty Overview", "Customer List", "Drill-down"])
+        with col_a:
+            # Customer count per specialty bar chart
+            chart_data = specialty_summary.sort_values('Customers', ascending=True)
+            fig, ax = plt.subplots(figsize=(6, max(3, len(chart_data) * 0.38)))
+            colors = [PALETTE[5] if s == 'Generalist' else PALETTE[0]
+                      for s in chart_data['Specialty']]
+            ax.barh(chart_data['Specialty'], chart_data['Customers'],
+                    color=colors, alpha=0.85)
+            ax.set_xlabel("# Customers", fontsize=9)
+            ax.tick_params(labelsize=8)
+            ax.spines[['top', 'right', 'left']].set_visible(False)
+            ax.set_title("Customers per Specialty", fontsize=9)
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
 
-        with tab1:
-            specialty_summary = (
-                specialty_df.groupby('Specialty')
-                .agg(
-                    Customers    =('CustomerId',      'count'),
-                    TotalSpend   =('TotalSpend',      'sum'),
-                    AvgSpend     =('TotalSpend',      'mean'),
-                    AvgShare     =('SpecialtyShare',  'mean'),
-                    AvgRecency   =('Recency',         'mean'),
-                    AvgFrequency =('Frequency',       'mean'),
-                )
+        with col_b:
+            # Revenue per specialty bar chart
+            chart_data2 = specialty_summary.sort_values('TotalSpend', ascending=True)
+            fig, ax = plt.subplots(figsize=(6, max(3, len(chart_data2) * 0.38)))
+            colors2 = [PALETTE[5] if s == 'Generalist' else PALETTE[1]
+                       for s in chart_data2['Specialty']]
+            ax.barh(chart_data2['Specialty'], chart_data2['TotalSpend'],
+                    color=colors2, alpha=0.85)
+            ax.set_xlabel("Total Revenue (€)", fontsize=9)
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
+            ax.tick_params(labelsize=8)
+            ax.spines[['top', 'right', 'left']].set_visible(False)
+            ax.set_title("Revenue per Specialty", fontsize=9)
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
+
+    with tab2:
+        st.markdown("**All customers with their assigned specialty**")
+
+        # Filter by specialty
+        all_specialties = sorted(specialty_df['Specialty'].unique().tolist())
+        selected_specialties = st.multiselect(
+            "Filter by specialty", all_specialties,
+            placeholder="All specialties"
+        )
+
+        display_customers = specialty_df.copy()
+        if selected_specialties:
+            display_customers = display_customers[
+                display_customers['Specialty'].isin(selected_specialties)
+            ]
+
+        display_customers = display_customers.sort_values('TotalSpend', ascending=False).copy()
+        display_customers['TotalSpend']      = display_customers['TotalSpend'].map(fmt_currency)
+        display_customers['SpecialtyShare']  = display_customers['SpecialtyShare'].map('{:.1%}'.format)
+        display_customers['Recency']         = display_customers['Recency'].map('{:.0f} days'.format)
+
+        show_df(
+            display_customers[['CustomerId', 'Specialty', 'SpecialtyShare',
+                                'TotalSpend', 'Frequency', 'Recency']]
+        )
+
+        st.markdown("---")
+
+        # Show current confirmed segmentation status
+        if 'confirmed_specialty' in st.session_state:
+            cs = st.session_state['confirmed_specialty']
+            st.success(
+                f"Active segmentation: **{cs['col']}** — "
+                f"{cs['n_specialties']} specialties, "
+                f"{cs['n_customers']} customers, "
+                + (f"threshold {cs['threshold']:.0%}" if cs['col'] != 'Basket Segmentation' else f"min {cs['threshold']} invoices")
+            )
+
+        confirm = st.checkbox(
+            "Use this segmentation for KVI Classification",
+            value='confirmed_specialty' in st.session_state,
+            key="confirm_seg_checkbox"
+        )
+
+        if confirm:
+            labels = specialty_df[['CustomerId', 'Specialty']].copy()
+            labels['CustomerId'] = labels['CustomerId'].astype(str)
+            st.session_state['confirmed_specialty'] = {
+                'labels':        labels,
+                'col':           specialty_col,
+                'threshold':     threshold,
+                'n_customers':   len(specialty_df),
+                'n_specialties': specialty_df['Specialty'].nunique(),
+            }
+            st.success(
+                f"Segmentation confirmed — {specialty_df['Specialty'].nunique()} groups "
+                f"across {len(specialty_df)} customers. "
+                f"Head to KVI Classification to use it."
+            )
+        elif not confirm and 'confirmed_specialty' in st.session_state:
+            del st.session_state['confirmed_specialty']
+
+    with tab3:
+        st.markdown("**Select a specialty to see its top customers and their category breakdown**")
+
+        drill_specialty = st.selectbox(
+            "Select specialty",
+            [s for s in all_specialties if s != 'Generalist'],
+            key="drill_spec"
+        )
+
+        spec_customers = specialty_df[specialty_df['Specialty'] == drill_specialty]['CustomerId'].tolist()
+        spec_df = fdf[fdf['CustomerId'].isin(spec_customers)]
+
+        c1, c2, c3 = st.columns(3)
+        with c1: metric_card("Customers", str(len(spec_customers)))
+        with c2: metric_card("Total Revenue", fmt_currency(spec_df['LineRevenue'].sum()))
+        with c3: metric_card("Avg Specialty Share",
+                              f"{specialty_df[specialty_df['Specialty']==drill_specialty]['SpecialtyShare'].mean():.1%}")
+
+        st.markdown("")
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.markdown(f"**Top customers in {drill_specialty}**")
+            top_spec_custs = (
+                specialty_df[specialty_df['Specialty'] == drill_specialty]
                 .sort_values('TotalSpend', ascending=False)
-                .reset_index()
+                .head(15)
+                .copy()
             )
-
-            # Format for display
-            display_summary = specialty_summary.copy()
-            display_summary['TotalSpend']   = display_summary['TotalSpend'].map(fmt_currency)
-            display_summary['AvgSpend']     = display_summary['AvgSpend'].map(fmt_currency)
-            display_summary['AvgShare']     = display_summary['AvgShare'].map('{:.1%}'.format)
-            display_summary['AvgRecency']   = display_summary['AvgRecency'].map('{:.0f} days'.format)
-            display_summary['AvgFrequency'] = display_summary['AvgFrequency'].map('{:.1f}'.format)
-            show_df(display_summary)
-
-            st.markdown("")
-            col_a, col_b = st.columns(2)
-
-            with col_a:
-                # Customer count per specialty bar chart
-                chart_data = specialty_summary.sort_values('Customers', ascending=True)
-                fig, ax = plt.subplots(figsize=(6, max(3, len(chart_data) * 0.38)))
-                colors = [PALETTE[5] if s == 'Generalist' else PALETTE[0]
-                          for s in chart_data['Specialty']]
-                ax.barh(chart_data['Specialty'], chart_data['Customers'],
-                        color=colors, alpha=0.85)
-                ax.set_xlabel("# Customers", fontsize=9)
-                ax.tick_params(labelsize=8)
-                ax.spines[['top', 'right', 'left']].set_visible(False)
-                ax.set_title("Customers per Specialty", fontsize=9)
-                fig.tight_layout()
-                st.pyplot(fig); plt.close()
-
-            with col_b:
-                # Revenue per specialty bar chart
-                chart_data2 = specialty_summary.sort_values('TotalSpend', ascending=True)
-                fig, ax = plt.subplots(figsize=(6, max(3, len(chart_data2) * 0.38)))
-                colors2 = [PALETTE[5] if s == 'Generalist' else PALETTE[1]
-                           for s in chart_data2['Specialty']]
-                ax.barh(chart_data2['Specialty'], chart_data2['TotalSpend'],
-                        color=colors2, alpha=0.85)
-                ax.set_xlabel("Total Revenue (€)", fontsize=9)
-                ax.xaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
-                ax.tick_params(labelsize=8)
-                ax.spines[['top', 'right', 'left']].set_visible(False)
-                ax.set_title("Revenue per Specialty", fontsize=9)
-                fig.tight_layout()
-                st.pyplot(fig); plt.close()
-
-        with tab2:
-            st.markdown("**All customers with their assigned specialty**")
-
-            # Filter by specialty
-            all_specialties = sorted(specialty_df['Specialty'].unique().tolist())
-            selected_specialties = st.multiselect(
-                "Filter by specialty", all_specialties,
-                placeholder="All specialties"
-            )
-
-            display_customers = specialty_df.copy()
-            if selected_specialties:
-                display_customers = display_customers[
-                    display_customers['Specialty'].isin(selected_specialties)
-                ]
-
-            display_customers = display_customers.sort_values('TotalSpend', ascending=False).copy()
-            display_customers['TotalSpend']      = display_customers['TotalSpend'].map(fmt_currency)
-            display_customers['SpecialtyShare']  = display_customers['SpecialtyShare'].map('{:.1%}'.format)
-            display_customers['Recency']         = display_customers['Recency'].map('{:.0f} days'.format)
-
+            top_spec_custs['TotalSpend']     = top_spec_custs['TotalSpend'].map(fmt_currency)
+            top_spec_custs['SpecialtyShare'] = top_spec_custs['SpecialtyShare'].map('{:.1%}'.format)
             show_df(
-                display_customers[['CustomerId', 'Specialty', 'SpecialtyShare',
-                                    'TotalSpend', 'Frequency', 'Recency']]
+                top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']]
             )
 
-            st.markdown("---")
-
-            # Show current confirmed segmentation status
-            if 'confirmed_specialty' in st.session_state:
-                cs = st.session_state['confirmed_specialty']
-                st.success(
-                    f"Active segmentation: **{cs['col']}** — "
-                    f"{cs['n_specialties']} specialties, "
-                    f"{cs['n_customers']} customers, "
-                    + (f"threshold {cs['threshold']:.0%}" if cs['col'] != 'Basket Segmentation' else f"min {cs['threshold']} invoices")
-                )
-
-            confirm = st.checkbox(
-                "Use this segmentation for KVI Classification",
-                value='confirmed_specialty' in st.session_state,
-                key="confirm_seg_checkbox"
+        with col_b:
+            st.markdown(f"**What else do {drill_specialty} customers buy?**")
+            # Spend share across ALL groups for this specialty's customers
+            other_spend = (
+                spec_df.groupby(specialty_col)['LineRevenue']
+                .sum()
+                .sort_values(ascending=False)
             )
+            other_share = other_spend / other_spend.sum()
 
-            if confirm:
-                labels = specialty_df[['CustomerId', 'Specialty']].copy()
-                labels['CustomerId'] = labels['CustomerId'].astype(str)
-                st.session_state['confirmed_specialty'] = {
-                    'labels':        labels,
-                    'col':           specialty_col,
-                    'threshold':     threshold,
-                    'n_customers':   len(specialty_df),
-                    'n_specialties': specialty_df['Specialty'].nunique(),
-                }
-                st.success(
-                    f"Segmentation confirmed — {specialty_df['Specialty'].nunique()} groups "
-                    f"across {len(specialty_df)} customers. "
-                    f"Head to KVI Classification to use it."
-                )
-            elif not confirm and 'confirmed_specialty' in st.session_state:
-                del st.session_state['confirmed_specialty']
+            fig, ax = plt.subplots(figsize=(6, max(3, len(other_spend) * 0.38)))
+            colors_drill = [PALETTE[0] if g == drill_specialty else PALETTE[2]
+                            for g in other_spend.index]
+            ax.barh(other_spend.index[::-1], other_share.values[::-1],
+                    color=colors_drill[::-1], alpha=0.85)
+            ax.set_xlabel("Spend Share", fontsize=9)
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0%}'))
+            ax.tick_params(labelsize=8)
+            ax.spines[['top', 'right', 'left']].set_visible(False)
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
 
-        with tab3:
-            st.markdown("**Select a specialty to see its top customers and their category breakdown**")
+        # Individual customer deep-dive within this specialty
+        st.markdown("---")
+        st.markdown(f"**Individual customer breakdown within {drill_specialty}**")
+        cust_pick = st.selectbox("Select customer", sorted(spec_customers), key="spec_cust_pick")
 
-            drill_specialty = st.selectbox(
-                "Select specialty",
-                [s for s in all_specialties if s != 'Generalist'],
-                key="drill_spec"
-            )
+        cust_spec_df = fdf[fdf['CustomerId'] == cust_pick]
+        cust_grp_spend = (
+            cust_spec_df.groupby(specialty_col)['LineRevenue']
+            .sum().sort_values(ascending=False)
+        )
+        cust_grp_share = cust_grp_spend / cust_grp_spend.sum()
 
-            spec_customers = specialty_df[specialty_df['Specialty'] == drill_specialty]['CustomerId'].tolist()
-            spec_df = fdf[fdf['CustomerId'].isin(spec_customers)]
-
-            c1, c2, c3 = st.columns(3)
-            with c1: metric_card("Customers", str(len(spec_customers)))
-            with c2: metric_card("Total Revenue", fmt_currency(spec_df['LineRevenue'].sum()))
-            with c3: metric_card("Avg Specialty Share",
-                                  f"{specialty_df[specialty_df['Specialty']==drill_specialty]['SpecialtyShare'].mean():.1%}")
-
-            st.markdown("")
-            col_a, col_b = st.columns(2)
-
-            with col_a:
-                st.markdown(f"**Top customers in {drill_specialty}**")
-                top_spec_custs = (
-                    specialty_df[specialty_df['Specialty'] == drill_specialty]
-                    .sort_values('TotalSpend', ascending=False)
-                    .head(15)
-                    .copy()
-                )
-                top_spec_custs['TotalSpend']     = top_spec_custs['TotalSpend'].map(fmt_currency)
-                top_spec_custs['SpecialtyShare'] = top_spec_custs['SpecialtyShare'].map('{:.1%}'.format)
-                show_df(
-                    top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']]
-                )
-
-            with col_b:
-                st.markdown(f"**What else do {drill_specialty} customers buy?**")
-                # Spend share across ALL groups for this specialty's customers
-                other_spend = (
-                    spec_df.groupby(specialty_col)['LineRevenue']
-                    .sum()
-                    .sort_values(ascending=False)
-                )
-                other_share = other_spend / other_spend.sum()
-
-                fig, ax = plt.subplots(figsize=(6, max(3, len(other_spend) * 0.38)))
-                colors_drill = [PALETTE[0] if g == drill_specialty else PALETTE[2]
-                                for g in other_spend.index]
-                ax.barh(other_spend.index[::-1], other_share.values[::-1],
-                        color=colors_drill[::-1], alpha=0.85)
-                ax.set_xlabel("Spend Share", fontsize=9)
-                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0%}'))
-                ax.tick_params(labelsize=8)
-                ax.spines[['top', 'right', 'left']].set_visible(False)
-                fig.tight_layout()
-                st.pyplot(fig); plt.close()
-
-            # Individual customer deep-dive within this specialty
-            st.markdown("---")
-            st.markdown(f"**Individual customer breakdown within {drill_specialty}**")
-            cust_pick = st.selectbox("Select customer", sorted(spec_customers), key="spec_cust_pick")
-
-            cust_spec_df = fdf[fdf['CustomerId'] == cust_pick]
-            cust_grp_spend = (
-                cust_spec_df.groupby(specialty_col)['LineRevenue']
-                .sum().sort_values(ascending=False)
-            )
-            cust_grp_share = cust_grp_spend / cust_grp_spend.sum()
-
-            cust_display = pd.DataFrame({
-                specialty_col: cust_grp_spend.index,
-                'Spend':       cust_grp_spend.map(fmt_currency).values,
-                'Share':       cust_grp_share.map('{:.1%}'.format).values,
-            })
-            show_df(cust_display[cust_display['Spend'] != '€0'])
+        cust_display = pd.DataFrame({
+            specialty_col: cust_grp_spend.index,
+            'Spend':       cust_grp_spend.map(fmt_currency).values,
+            'Share':       cust_grp_share.map('{:.1%}'.format).values,
+        })
+        show_df(cust_display[cust_display['Spend'] != '€0'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 7 — KVI CLASSIFICATION
