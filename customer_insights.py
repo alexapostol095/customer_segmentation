@@ -548,18 +548,6 @@ with st.sidebar:
         cat_filters[col] = selected
 
     st.markdown("---")
-    st.markdown("**Product aggregation**")
-    agg_col_options = ["None (use ProductId)"] + [c for c in filter_cat_cols if c != 'CreatedDate']
-    agg_col = st.selectbox(
-        "Aggregate products by",
-        agg_col_options,
-        index=0,
-        key="agg_col",
-        help="Treat a higher-level column (e.g. SubGroup) as the product unit. KVI Classification and Pricing Simulation always use ProductId."
-    )
-    agg_col = None if agg_col == "None (use ProductId)" else agg_col
-
-    st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{n_rows:,} rows · {n_customers:,} customers</span>", unsafe_allow_html=True)
 
 # ── Apply filters ──────────────────────────────────────────────────────────────
@@ -581,54 +569,7 @@ def apply_filters(df, date_range, selected_customers, cat_filters_tuple, seg_key
             fdf = fdf[fdf[col].astype(str).isin(vals)]
     return fdf
 
-@st.cache_data(show_spinner=False)
-def apply_product_aggregation(fdf, agg_col, _fp):
-    """Aggregate order lines by a higher-level column (e.g. SubGroup),
-    treating that column as ProductId. KVI/Simulation views use the
-    original df so they always work at true ProductId level."""
-    if agg_col is None:
-        return fdf
-
-    # Carry-forward columns that are constant per InvoiceId+agg_col group
-    carry_cols = ['CreatedDate', 'CustomerId', 'MainGroup', 'AttributeA',
-                  'AttributeB', 'AttributeC', 'Segmentation']
-    carry_cols = [c for c in carry_cols if c in fdf.columns]
-
-    agg_dict = {
-        'Quantity':  'sum',
-        'LineRevenue': 'sum',
-        **{c: 'first' for c in carry_cols},
-    }
-    if 'TotalCostPerUnit' in fdf.columns:
-        fdf = fdf.copy()
-        fdf['_Cost']   = fdf['Quantity'] * fdf['TotalCostPerUnit']
-        fdf['_Margin'] = fdf['Quantity'] * fdf.get('MarginPerUnit', fdf['PricePerUnit'] - fdf['TotalCostPerUnit'])
-        agg_dict['_Cost']   = 'sum'
-        agg_dict['_Margin'] = 'sum'
-
-    agg_dict['LineRevenue'] = 'sum'
-
-    grouped = fdf.groupby(['InvoiceId', agg_col], as_index=False).agg(agg_dict)
-
-    # Reconstruct per-unit columns
-    grouped['ProductId']       = grouped[agg_col].astype(str)
-    grouped['PricePerUnit']    = grouped['LineRevenue'] / grouped['Quantity'].replace(0, np.nan)
-    if '_Cost' in grouped.columns:
-        grouped['TotalCostPerUnit'] = grouped['_Cost'] / grouped['Quantity'].replace(0, np.nan)
-        grouped['MarginPerUnit']    = grouped['_Margin'] / grouped['Quantity'].replace(0, np.nan)
-        grouped = grouped.drop(columns=['_Cost', '_Margin'])
-
-    return grouped
-
 fdf = apply_filters(df, _date_key, _cust_key, cat_filters_tuple, _seg_key)
-
-# Build fingerprint before aggregation so it's available for all cached calls
-_fdf_fp = f"{_date_key}|{_cust_key}|{cat_filters_tuple}|{_seg_key}|{agg_col}"
-
-# Store original filtered df for KVI/Simulation which always need true ProductId
-fdf_original = fdf
-
-fdf = apply_product_aggregation(fdf, agg_col, _fdf_fp)
 
 # Merge confirmed specialty labels — cached via a separate function so the
 # 92ms merge doesn't run on every click
@@ -664,6 +605,10 @@ def get_cat_cols(df, _fp=''):
             or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
         )
     ]
+
+# Robust fingerprint: keyed on what actually determines fdf content,
+# not on the output data (avoids false cache hits from coincidental equality)
+_fdf_fp = f"{_date_key}|{_cust_key}|{cat_filters_tuple}|{_seg_key}"
 
 rfm, prod_repeat = compute_base(fdf, _fdf_fp)
 cat_cols = get_cat_cols(fdf, _fdf_fp)
@@ -1961,8 +1906,6 @@ elif analysis == "KVI Classification":
         "customer breadth, and basket co-occurrence."
         "</p>", unsafe_allow_html=True
     )
-    if agg_col:
-        st.info(f"ℹ️ Product aggregation is set to **{agg_col}** in the sidebar. KVI Classification always uses the original **ProductId** level regardless.")
 
     # Controls
     col_c1, col_c2 = st.columns(2)
@@ -2024,16 +1967,16 @@ elif analysis == "KVI Classification":
             group_customers = confirmed_labels[
                 confirmed_labels['Customer Cluster'] == selected_group_val
             ]['CustomerId'].unique()
-            kvi_input = fdf_original[fdf_original["CustomerId"].isin(group_customers)]
+            kvi_input = fdf[fdf['CustomerId'].isin(group_customers)]
             scope_label = f"Specialty = {selected_group_val}"
 
         elif seg_source == "Custom group" and group_col_kvi and selected_group_val:
             group_customers = fdf[fdf[group_col_kvi].astype(str) == selected_group_val]['CustomerId'].unique()
-            kvi_input = fdf_original[fdf_original["CustomerId"].isin(group_customers)]
+            kvi_input = fdf[fdf['CustomerId'].isin(group_customers)]
             scope_label = f"{group_col_kvi} = {selected_group_val}"
 
         else:
-            kvi_input = fdf_original
+            kvi_input = fdf
             scope_label = "All customers"
 
         if len(kvi_input) == 0:
@@ -2218,8 +2161,6 @@ elif analysis == "Pricing Simulation":
         "and margin against the baseline for a selected time period."
         "</p>", unsafe_allow_html=True
     )
-    if agg_col:
-        st.info(f"ℹ️ Product aggregation is set to **{agg_col}**. Simulation uses the aggregated product level — choose a product category column accordingly.")
 
     # ── Setup ──────────────────────────────────────────────────────────────────
     col_s1, col_s2, col_s3 = st.columns(3)
