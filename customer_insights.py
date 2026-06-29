@@ -862,9 +862,13 @@ elif analysis == "Basket Segmentation":
                         selected_f = st.multiselect(col, vals, placeholder=f"All {col}", key=f"bseg_filter_{col}")
                         bc_filters[col] = selected_f
 
+    @st.cache_data(show_spinner=False)
+    def get_cust_invoice_counts(fdf, _fp):
+        return fdf.groupby('CustomerId')['InvoiceId'].nunique().sort_values(ascending=False)
+
     with col_exp2:
         with st.expander("Filter inactive customers", expanded=False):
-            cust_invoice_counts = fdf.groupby('CustomerId')['InvoiceId'].nunique().sort_values(ascending=False)
+            cust_invoice_counts = get_cust_invoice_counts(fdf, _fdf_fp)
             total_custs = len(cust_invoice_counts)
             top_pct = st.slider(
                 "Keep top % of customers by invoices", 10, 100, 100, 5,
@@ -883,7 +887,6 @@ elif analysis == "Basket Segmentation":
         if vals:
             bc_df = bc_df[bc_df[col].astype(str).isin(vals)]
 
-    # Apply active customer filter
     if top_pct < 100:
         bc_df = bc_df[bc_df['CustomerId'].isin(active_customers)]
 
@@ -891,54 +894,46 @@ elif analysis == "Basket Segmentation":
     if has_margin:
         bc_df['LineMargin'] = (bc_df['PricePerUnit'] - bc_df['TotalCostPerUnit']) * bc_df['Quantity']
 
-    all_products = sorted(bc_df['ProductId'].astype(str).unique().tolist())
+    @st.cache_data(show_spinner=False)
+    def get_all_products(bc_df, _fp):
+        return sorted(bc_df['ProductId'].astype(str).unique().tolist())
 
-    # ── Helper: basket info ────────────────────────────────────────────────
-    def basket_info(product_list, df):
-        """Return key stats for a list of products — revenue/margin from invoices where ALL products appear together."""
-        prods = set(str(p) for p in product_list)
+    _bc_fp = f"{_fdf_fp}|{tuple(sorted(bc_filters.items()))}|{top_pct}"
+    all_products = get_all_products(bc_df, _bc_fp)
+
+    # ── Helper: basket info (cached) ───────────────────────────────────────
+    @st.cache_data(show_spinner=False)
+    def basket_info_cached(product_tuple, df, _fp):
+        """Return key stats — revenue/margin from invoices where ALL products appear together."""
+        prods = set(str(p) for p in product_tuple)
         if not prods:
             return None
 
-        # Find invoices that contain all basket products
-        inv_prod = (
-            df[df['ProductId'].astype(str).isin(prods)]
-            .groupby('InvoiceId')['ProductId']
-            .apply(lambda x: set(x.astype(str)))
-        )
-        basket_invoices = inv_prod[inv_prod.apply(lambda x: prods.issubset(x))].index
+        # Build inverted index once: product -> set of invoices
+        sub = df[df['ProductId'].astype(str).isin(prods)]
+        prod_to_inv = sub.groupby('ProductId')['InvoiceId'].apply(set).to_dict()
+        invoice_sets = list(prod_to_inv.values())
+        basket_invoices = set.intersection(*invoice_sets) if invoice_sets else set()
 
-        if len(basket_invoices) == 0:
-            return {
-                'customers_all': 0,
-                'customers_any': len(set.union(*[
-                    set(df[df['ProductId'].astype(str) == p]['CustomerId'].unique())
-                    for p in prods
-                ])),
-                'total_rev': 0,
-                'total_mar': None,
-            }
+        customers_any = sub['CustomerId'].nunique()
 
-        # Revenue/margin only from those invoices, only for basket products
+        if not basket_invoices:
+            return {'customers_all': 0, 'customers_any': customers_any,
+                    'total_rev': 0, 'total_mar': None}
+
         basket_lines = df[
             df['InvoiceId'].isin(basket_invoices) &
             df['ProductId'].astype(str).isin(prods)
         ]
-
         customers_all = df[df['InvoiceId'].isin(basket_invoices)]['CustomerId'].nunique()
-        customers_any = len(set.union(*[
-            set(df[df['ProductId'].astype(str) == p]['CustomerId'].unique())
-            for p in prods
-        ]))
         total_rev = basket_lines['LineRevenue'].sum()
         total_mar = basket_lines['LineMargin'].sum() if 'LineMargin' in basket_lines.columns else None
 
-        return {
-            'customers_all': customers_all,
-            'customers_any': customers_any,
-            'total_rev':     total_rev,
-            'total_mar':     total_mar,
-        }
+        return {'customers_all': customers_all, 'customers_any': customers_any,
+                'total_rev': total_rev, 'total_mar': total_mar}
+
+    def basket_info(product_list, df):
+        return basket_info_cached(tuple(sorted(str(p) for p in product_list)), df, _bc_fp)
 
     # ── Auto-suggest baskets from co-occurrence ────────────────────────────
     st.markdown('<div class="section-header" style="font-size:1.1rem">Step 1 — Auto-suggested Baskets</div>', unsafe_allow_html=True)
@@ -1143,30 +1138,24 @@ elif analysis == "Basket Segmentation":
 
             # All customers in the data
             all_custs = fdf['CustomerId'].unique()
-            counts_df = counts_df.set_index('CustomerId').reindex(all_custs, fill_value=0).reset_index()
+            counts_df = counts_df.set_index('CustomerId').reindex(all_custs, fill_value=0)
 
-            results = []
             basket_names = list(baskets.keys())
 
-            for _, row in counts_df.iterrows():
-                cust = row['CustomerId']
-                cust_counts = {b: row[b] for b in basket_names}
-                max_count   = max(cust_counts.values())
+            # Vectorized assignment — no Python loop over customers
+            max_counts  = counts_df[basket_names].max(axis=1)
+            best_basket = counts_df[basket_names].idxmax(axis=1)
 
-                if max_count < min_invoices:
-                    assigned = 'Insufficient Data'
-                else:
-                    # Assign to basket with most invoices; ties broken alphabetically
-                    assigned = max(cust_counts, key=lambda b: cust_counts[b])
+            assigned_series = best_basket.where(max_counts >= min_invoices, 'No Segmentation')
 
-                results.append({
-                    'CustomerId':     cust,
-                    'AssignedBasket': assigned,
-                    'BasketInvoices': max_count,
-                    **{f'Invoices_{b}': cust_counts[b] for b in basket_names},
-                })
-
-            assignment_df = pd.DataFrame(results)
+            assignment_df = pd.DataFrame({
+                'CustomerId':     counts_df.index,
+                'AssignedBasket': assigned_series.values,
+                'BasketInvoices': max_counts.values,
+            })
+            for b in basket_names:
+                assignment_df[f'Invoices_{b}'] = counts_df[b].values
+            assignment_df = assignment_df.reset_index(drop=True)
             # Rename Insufficient Data to No Segmentation
             assignment_df['AssignedBasket'] = assignment_df['AssignedBasket'].replace(
                 'Insufficient Data', 'No Segmentation'
@@ -1284,42 +1273,46 @@ elif analysis == "Basket Exploration":
 
     basket_size = 3
 
-    # Apply top % product filter
-    prod_inv_counts = fdf.groupby('ProductId')['InvoiceId'].nunique().sort_values(ascending=False)
+    # Cache product frequency — avoids full groupby on every slider tweak
+    @st.cache_data(show_spinner=False)
+    def get_prod_inv_counts(fdf, _fp):
+        return fdf.groupby('ProductId')['InvoiceId'].nunique().sort_values(ascending=False)
+
+    prod_inv_counts = get_prod_inv_counts(fdf, _fdf_fp)
     n_prods_keep = max(1, int(np.ceil(len(prod_inv_counts) * top_pct_prods / 100)))
     top_products_exp = set(prod_inv_counts.head(n_prods_keep).index.tolist())
     exp_input_df = fdf[fdf['ProductId'].isin(top_products_exp)]
     st.caption(f"Using top {top_pct_prods}% → {n_prods_keep:,} of {len(prod_inv_counts):,} products")
 
     @st.cache_data(show_spinner=False)
-    def compute_basket_exploration(df, size, n_results):
+    def compute_basket_exploration(df, size, n_results, _fp=''):
+        from collections import Counter
         has_cost = 'TotalCostPerUnit' in df.columns
         if has_cost:
             df = df.copy()
             df['LineMargin'] = (df['PricePerUnit'] - df['TotalCostPerUnit']) * df['Quantity']
 
-        # Build product list per invoice — much faster than full pivot
+        # Build product list per invoice
         inv_products = (
             df.groupby('InvoiceId')['ProductId']
             .apply(lambda x: sorted(x.astype(str).unique().tolist()))
             .reset_index()
         )
 
-        # Generate combos from invoice product lists
-        combos = []
+        # Count combos using Counter — much faster than building a list
+        # then calling pd.Series().value_counts()
+        combo_counter = Counter()
         for prods in inv_products['ProductId']:
             if len(prods) >= size:
                 for combo in combinations(prods, size):
-                    combos.append(combo)
+                    combo_counter[combo] += 1
 
-        if not combos:
+        if not combo_counter:
             return pd.DataFrame()
 
-        combo_counts = pd.Series(combos).value_counts().head(n_results * 3)
+        top_combos = combo_counter.most_common(n_results * 3)
 
-        # Inverted index: product -> set of invoices containing it.
-        # Lets us find "invoices with all basket products" via fast set
-        # intersection instead of scanning every invoice per combo.
+        # Inverted index: product -> set of invoices
         prod_to_invoices = (
             df.assign(_p=df['ProductId'].astype(str))
             .groupby('_p')['InvoiceId']
@@ -1328,7 +1321,7 @@ elif analysis == "Basket Exploration":
         )
 
         rows = []
-        for combo, inv_count in combo_counts.items():
+        for combo, inv_count in top_combos:
             combo_set = set(combo)
             invoice_sets = [prod_to_invoices.get(p, set()) for p in combo_set]
             basket_inv = set.intersection(*invoice_sets) if invoice_sets else set()
@@ -1355,7 +1348,7 @@ elif analysis == "Basket Exploration":
         return pd.DataFrame(rows)
 
     with st.spinner("Computing basket exploration..."):
-        exp_df = compute_basket_exploration(exp_input_df, basket_size, top_n_exp)
+        exp_df = compute_basket_exploration(exp_input_df, basket_size, top_n_exp, _fdf_fp)
 
     if exp_df.empty:
         st.info("Not enough data for this basket size. Try reducing the basket size or expanding the product universe.")
