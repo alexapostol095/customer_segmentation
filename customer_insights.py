@@ -483,6 +483,34 @@ with st.spinner("Loading data…"):
 with st.spinner("Computing metrics…"):
     rfm, prod_repeat = compute_base(df, f"{len(df)}_{df['LineRevenue'].sum():.2f}")
 
+# ── Cached sidebar helpers (run once, not on every click) ─────────────────────
+@st.cache_data(show_spinner=False)
+def get_sidebar_options(df):
+    """Compute all sidebar filter options once from the raw df."""
+    id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
+    filter_cat_cols = [
+        c for c in df.columns
+        if c not in id_cols
+        and 1 < df[c].nunique() < 200
+        and (
+            str(df[c].dtype) in ('object', 'category', 'str', 'string')
+            or str(df[c].dtype).startswith('str')
+            or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
+        )
+    ]
+    col_vals = {
+        col: sorted(df[col].dropna().astype(str).unique().tolist())
+        for col in filter_cat_cols
+    }
+    all_customers = sorted(df['CustomerId'].unique().tolist())
+    min_date = df['CreatedDate'].min().date() if 'CreatedDate' in df.columns else None
+    max_date = df['CreatedDate'].max().date() if 'CreatedDate' in df.columns else None
+    n_rows = len(df)
+    n_customers = df['CustomerId'].nunique()
+    return filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers
+
+filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers = get_sidebar_options(df)
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### Explorer Controls")
@@ -501,10 +529,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Filters**")
 
-    # Date filter
-    if 'CreatedDate' in df.columns:
-        min_date = df['CreatedDate'].min().date()
-        max_date = df['CreatedDate'].max().date()
+    if min_date is not None:
         date_range = st.date_input(
             "Date range",
             value=(min_date, max_date),
@@ -514,74 +539,60 @@ with st.sidebar:
     else:
         date_range = None
 
-    # Customer filter
-    all_customers = sorted(df['CustomerId'].unique().tolist())
     selected_customers = st.multiselect("Customers", all_customers, placeholder="All customers")
-
-    # Detect all low-cardinality categorical columns for filtering
-    id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
-    filter_cat_cols = [
-        c for c in df.columns
-        if c not in id_cols
-        and 1 < df[c].nunique() < 200
-        and (
-            str(df[c].dtype) in ('object', 'category', 'str', 'string')
-            or (str(df[c].dtype).startswith('str') )
-            or (df[c].dtype in ['int64', 'float64', 'Int64'] and df[c].nunique() < 50)
-        )
-    ]
 
     cat_filters = {}
     for col in filter_cat_cols:
-        vals = sorted(df[col].dropna().astype(str).unique().tolist())
-        selected = st.multiselect(col, vals, placeholder=f"All {col}", key=f"filter_{col}")
+        selected = st.multiselect(col, col_vals[col], placeholder=f"All {col}", key=f"filter_{col}")
         cat_filters[col] = selected
 
     st.markdown("---")
-    st.markdown(f"<span style='font-size:0.75rem;color:#888'>{len(df):,} rows · {df['CustomerId'].nunique():,} customers</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='font-size:0.75rem;color:#888'>{n_rows:,} rows · {n_customers:,} customers</span>", unsafe_allow_html=True)
+
+# ── Apply filters ──────────────────────────────────────────────────────────────
+cat_filters_tuple = tuple((k, tuple(v)) for k, v in cat_filters.items() if v)
+_date_key = tuple(date_range) if date_range and len(date_range) == 2 else None
+_cust_key  = tuple(selected_customers)
+_seg_key   = str(st.session_state.get('confirmed_specialty', {}).get('n_customers', ''))
 
 @st.cache_data(show_spinner=False)
-def apply_filters(df, date_range, selected_customers, cat_filters_tuple, confirmed_labels_key):
-    """Returns filtered fdf and cat_cols. Cached so this only reruns when
-    filters actually change, not on every widget interaction."""
+def apply_filters(df, date_range, selected_customers, cat_filters_tuple, seg_key):
     fdf = df.copy()
-
-    if date_range and len(date_range) == 2:
+    if date_range:
         start, end = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
         fdf = fdf[(fdf['CreatedDate'] >= start) & (fdf['CreatedDate'] <= end)]
-
     if selected_customers:
         fdf = fdf[fdf['CustomerId'].isin(selected_customers)]
-
     for col, vals in cat_filters_tuple:
         if vals:
             fdf = fdf[fdf[col].astype(str).isin(vals)]
-
     return fdf
 
-# ── Apply filters ──────────────────────────────────────────────────────────────
-# Convert cat_filters dict to a hashable tuple for caching
-cat_filters_tuple = tuple((k, tuple(v)) for k, v in cat_filters.items() if v)
-fdf = apply_filters(
-    df,
-    tuple(date_range) if date_range and len(date_range) == 2 else None,
-    tuple(selected_customers),
-    cat_filters_tuple,
-    # Pass a hash of the labels so cache busts when segmentation changes
-    str(hash(str(st.session_state.get('confirmed_specialty', {}).get('n_customers', ''))))
-)
+fdf = apply_filters(df, _date_key, _cust_key, cat_filters_tuple, _seg_key)
 
-# Merge confirmed specialty labels into fdf
-if 'confirmed_specialty' in st.session_state:
-    _labels = st.session_state['confirmed_specialty']['labels'].copy()
+# Merge confirmed specialty labels — cached via a separate function so the
+# 92ms merge doesn't run on every click
+@st.cache_data(show_spinner=False)
+def merge_labels(fdf, labels_df, seg_key):
+    if labels_df is None:
+        return fdf
+    _labels = labels_df.copy()
     if 'Specialty' in _labels.columns and 'Customer Cluster' not in _labels.columns:
         _labels = _labels.rename(columns={'Specialty': 'Customer Cluster'})
     _labels['CustomerId'] = _labels['CustomerId'].astype(str)
-    fdf = fdf.merge(_labels, on='CustomerId', how='left')
-    fdf['Customer Cluster'] = fdf['Customer Cluster'].fillna('Unassigned')
+    out = fdf.merge(_labels, on='CustomerId', how='left')
+    out['Customer Cluster'] = out['Customer Cluster'].fillna('Unassigned')
+    return out
+
+if 'confirmed_specialty' in st.session_state:
+    fdf = merge_labels(
+        fdf,
+        st.session_state['confirmed_specialty']['labels'],
+        _seg_key
+    )
 
 @st.cache_data(show_spinner=False)
-def get_cat_cols(df):
+def get_cat_cols(df, _fp=''):
     id_cols = {'CustomerId', 'InvoiceId', 'ProductId', 'CreatedDate'}
     return [
         c for c in df.columns
@@ -594,12 +605,12 @@ def get_cat_cols(df):
         )
     ]
 
-# Lightweight fingerprint — avoids Streamlit hashing the full 456k-row dataframe
-# (~440ms overhead) on every rerun for each cached function call
-_fdf_fp = f"{len(fdf)}_{fdf['LineRevenue'].sum():.2f}"
+# Robust fingerprint: keyed on what actually determines fdf content,
+# not on the output data (avoids false cache hits from coincidental equality)
+_fdf_fp = f"{_date_key}|{_cust_key}|{cat_filters_tuple}|{_seg_key}"
 
 rfm, prod_repeat = compute_base(fdf, _fdf_fp)
-cat_cols = get_cat_cols(fdf)
+cat_cols = get_cat_cols(fdf, _fdf_fp)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 1 — OVERVIEW
