@@ -1299,8 +1299,6 @@ elif analysis == "Basket Exploration":
             .reset_index()
         )
 
-        # Count combos using Counter — much faster than building a list
-        # then calling pd.Series().value_counts()
         combo_counter = Counter()
         for prods in inv_products['ProductId']:
             if len(prods) >= size:
@@ -1312,13 +1310,26 @@ elif analysis == "Basket Exploration":
 
         top_combos = combo_counter.most_common(n_results * 3)
 
-        # Inverted index: product -> set of invoices
-        prod_to_invoices = (
-            df.assign(_p=df['ProductId'].astype(str))
-            .groupby('_p')['InvoiceId']
-            .apply(set)
-            .to_dict()
+        # ── One-time precomputation, reused for every candidate combo ──────────
+        df = df.assign(_p=df['ProductId'].astype(str))
+
+        # product -> set of invoices (already existed, keep it)
+        prod_to_invoices = df.groupby('_p')['InvoiceId'].apply(set).to_dict()
+
+        # invoice -> customer (single lookup, avoids re-filtering df per combo)
+        inv_to_cust = df.drop_duplicates('InvoiceId').set_index('InvoiceId')['CustomerId']
+
+        # (InvoiceId, ProductId) -> revenue/margin aggregated once
+        line_agg_cols = {'LineRevenue': 'sum'}
+        if has_cost:
+            line_agg_cols['LineMargin'] = 'sum'
+        line_agg = (
+            df.groupby(['InvoiceId', '_p'])
+            .agg(**{k: (k, v) for k, v in line_agg_cols.items()})
         )
+        # MultiIndex (InvoiceId, ProductId) -> revenue / margin, for fast .loc slicing
+        rev_by_invprod = line_agg['LineRevenue']
+        mar_by_invprod = line_agg['LineMargin'] if has_cost else None
 
         rows = []
         for combo, inv_count in top_combos:
@@ -1326,14 +1337,27 @@ elif analysis == "Basket Exploration":
             invoice_sets = [prod_to_invoices.get(p, set()) for p in combo_set]
             basket_inv = set.intersection(*invoice_sets) if invoice_sets else set()
 
-            basket_lines = df[
-                df['InvoiceId'].isin(basket_inv) &
-                df['ProductId'].astype(str).isin(combo_set)
-            ]
-            cust_count = df[df['InvoiceId'].isin(basket_inv)]['CustomerId'].nunique()
-            revenue    = basket_lines['LineRevenue'].sum()
-            margin     = basket_lines['LineMargin'].sum() if has_cost else None
-            avg_rev    = revenue / len(basket_inv) if len(basket_inv) > 0 else 0
+            if not basket_inv:
+                rows.append({
+                    'Combo': combo, 'Products': ' + '.join(str(p) for p in combo),
+                    'InvoiceCount': inv_count, 'CustomerCount': 0,
+                    'BasketRevenue': 0, 'BasketMargin': 0 if has_cost else None,
+                    'AvgRevenuePerInvoice': 0,
+                })
+                continue
+
+            basket_inv_list = list(basket_inv)
+            combo_list = list(combo_set)
+
+            # Vectorized slice of the precomputed (invoice, product) aggregates —
+            # no scan of the original dataframe
+            idx = pd.MultiIndex.from_product([basket_inv_list, combo_list])
+            rev_slice = rev_by_invprod.reindex(idx).dropna()
+            revenue = rev_slice.sum()
+            margin = mar_by_invprod.reindex(idx).dropna().sum() if has_cost else None
+
+            cust_count = inv_to_cust.reindex(basket_inv_list).nunique()
+            avg_rev = revenue / len(basket_inv) if len(basket_inv) > 0 else 0
 
             rows.append({
                 'Combo':              combo,
@@ -1386,26 +1410,28 @@ elif analysis == "Basket Exploration":
 
         # ── Assortment coverage ───────────────────────────────────────────
         # Unique customers covered by at least one basket in the displayed list
+        # Track basket_inv sets computed during scoring so we don't redo it here
+        # (do this by having compute_basket_exploration optionally return them, OR
+        # recompute once cheaply using prod_to_invoices logic outside the cached fn)
+
         all_basket_products = set()
         for combo in exp_df['Combo']:
             all_basket_products.update(combo)
 
+        # Build invoice->product-set only once, only over the relevant rows
         covered_invoices = (
             fdf[fdf['ProductId'].astype(str).isin(all_basket_products)]
-            .groupby('InvoiceId')['ProductId']
-            .apply(lambda x: set(x.astype(str)))
+            .assign(_p=lambda d: d['ProductId'].astype(str))
+            .groupby('InvoiceId')['_p'].apply(frozenset)
         )
 
-        # Customers who appear in any invoice that contains at least one full basket
         covered_customers = set()
+        inv_to_cust_full = fdf.drop_duplicates('InvoiceId').set_index('InvoiceId')['CustomerId']
         for combo in exp_df['Combo']:
-            combo_set = set(combo)
-            basket_inv_ids = covered_invoices[
-                covered_invoices.apply(lambda s: combo_set.issubset(s))
-            ].index
-            covered_customers.update(
-                fdf[fdf['InvoiceId'].isin(basket_inv_ids)]['CustomerId'].unique()
-            )
+            combo_set = frozenset(combo)
+            mask = covered_invoices.apply(lambda s, cs=combo_set: cs <= s)  # subset check, same cost but frozenset is faster
+            basket_inv_ids = covered_invoices[mask].index
+            covered_customers.update(inv_to_cust_full.reindex(basket_inv_ids).dropna().unique())
 
         total_customers = fdf['CustomerId'].nunique()
         coverage_pct = len(covered_customers) / total_customers if total_customers > 0 else 0
@@ -1539,8 +1565,8 @@ elif analysis == "Basket Exploration":
             basket_inv = inv_prod_exp[inv_prod_exp.apply(lambda x: exp_prods_set.issubset(x))].index
 
             has_cost_exp = 'TotalCostPerUnit' in fdf.columns
-            if has_cost_exp:
-                fdf['LineMargin'] = (fdf['PricePerUnit'] - fdf['TotalCostPerUnit']) * fdf['Quantity']
+            if has_cost_exp and 'LineMargin' not in fdf.columns:
+                fdf = fdf.assign(LineMargin=(fdf['PricePerUnit'] - fdf['TotalCostPerUnit']) * fdf['Quantity'])
 
             basket_lines = fdf[
                 fdf['InvoiceId'].isin(basket_inv) &
