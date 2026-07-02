@@ -1111,11 +1111,37 @@ elif analysis == "Basket Segmentation":
     st.markdown("---")
     st.markdown('<div class="section-header" style="font-size:1.1rem">Step 3 — Assign Customers</div>', unsafe_allow_html=True)
 
-    min_invoices = st.slider(
-        "Min invoices containing the full basket to be assigned",
-        1, 20, 3,
-        help="Counts only invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled Insufficient Data"
+    assign_metric = st.selectbox(
+        "Assign customers based on",
+        ["Invoice Count", "Revenue", "Revenue Share of Customer Spend"],
+        key="bseg_assign_metric",
+        help=(
+            "Invoice Count — how many invoices contain the full basket together. "
+            "Revenue — total revenue from those invoices. "
+            "Revenue Share of Customer Spend — what share of a customer's overall spend "
+            "comes from the full basket, which surfaces customers defined by a basket "
+            "even if they're not big spenders overall."
+        )
     )
+
+    if assign_metric == "Invoice Count":
+        assign_threshold = st.slider(
+            "Min invoices containing the full basket to be assigned",
+            1, 20, 3,
+            help="Counts only invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled No Segmentation."
+        )
+    elif assign_metric == "Revenue":
+        assign_threshold = st.number_input(
+            "Min revenue from the full basket to be assigned (€)",
+            min_value=0.0, value=100.0, step=25.0,
+            help="Total revenue from invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled No Segmentation."
+        )
+    else:
+        assign_threshold = st.slider(
+            "Min % of a customer's total spend that must come from the full basket",
+            0, 100, 10,
+            help="Share of the customer's overall spend that comes from invoices containing the full basket. Customers below this threshold for every basket are labelled No Segmentation."
+        )
 
     if not st.session_state['defined_baskets']:
         st.info("Define at least one basket above to run assignment.")
@@ -1123,9 +1149,12 @@ elif analysis == "Basket Segmentation":
         with st.spinner("Assigning customers..."):
 
             baskets = st.session_state['defined_baskets']
+            all_custs = fdf['CustomerId'].unique()
+            cust_total_spend = fdf.groupby('CustomerId')['LineRevenue'].sum()
 
-            # For each basket, count invoices where customer bought ALL basket products together
-            basket_invoice_counts = {}
+            # For each basket, compute invoice count, revenue, and revenue share
+            # from invoices where the customer bought ALL basket products together
+            invoice_counts, revenue_stats, share_pct_stats = {}, {}, {}
             for bname, bprods in baskets.items():
                 bprods_set = set(str(p) for p in bprods)
 
@@ -1136,46 +1165,56 @@ elif analysis == "Basket Segmentation":
                     .apply(lambda x: set(x.astype(str)))
                 )
                 full_basket_invoices = inv_prod[inv_prod.apply(lambda x: bprods_set.issubset(x))].index
+                basket_lines = fdf[fdf['InvoiceId'].isin(full_basket_invoices)]
 
-                # Count how many of those invoices each customer has
-                counts = (
-                    fdf[fdf['InvoiceId'].isin(full_basket_invoices)]
-                    .groupby('CustomerId')['InvoiceId']
-                    .nunique()
-                    .rename(bname)
-                )
-                basket_invoice_counts[bname] = counts
+                inv_count = basket_lines.groupby('CustomerId')['InvoiceId'].nunique().rename(bname)
+                revenue   = basket_lines.groupby('CustomerId')['LineRevenue'].sum().rename(bname)
+                share_pct = (revenue / cust_total_spend.reindex(revenue.index) * 100).fillna(0).rename(bname)
 
-            # Build a customer × basket matrix of invoice counts
-            counts_df = pd.DataFrame(basket_invoice_counts).fillna(0).astype(int)
-            counts_df.index.name = 'CustomerId'
-            counts_df = counts_df.reset_index()
-
-            # All customers in the data
-            all_custs = fdf['CustomerId'].unique()
-            counts_df = counts_df.set_index('CustomerId').reindex(all_custs, fill_value=0)
+                invoice_counts[bname] = inv_count
+                revenue_stats[bname]  = revenue
+                share_pct_stats[bname] = share_pct
 
             basket_names = list(baskets.keys())
 
-            # Vectorized assignment — no Python loop over customers
-            max_counts  = counts_df[basket_names].max(axis=1)
-            best_basket = counts_df[basket_names].idxmax(axis=1)
+            def _to_matrix(stat_dict):
+                m = pd.DataFrame(stat_dict).fillna(0)
+                m.index.name = 'CustomerId'
+                return m.reindex(all_custs, fill_value=0)
 
-            assigned_series = best_basket.where(max_counts >= min_invoices, 'No Segmentation')
+            invoices_df = _to_matrix(invoice_counts)
+            revenue_df  = _to_matrix(revenue_stats)
+            share_df    = _to_matrix(share_pct_stats)
+
+            metric_df = {
+                "Invoice Count":                  invoices_df,
+                "Revenue":                         revenue_df,
+                "Revenue Share of Customer Spend": share_df,
+            }[assign_metric]
+
+            # Vectorized assignment — no Python loop over customers
+            max_stat    = metric_df[basket_names].max(axis=1)
+            best_basket = metric_df[basket_names].idxmax(axis=1)
+
+            assigned_series = best_basket.where(max_stat >= assign_threshold, 'No Segmentation')
 
             assignment_df = pd.DataFrame({
-                'CustomerId':     counts_df.index,
+                'CustomerId':     metric_df.index,
                 'AssignedBasket': assigned_series.values,
-                'BasketInvoices': max_counts.values,
+                'AssignmentStat': max_stat.values,
             })
             for b in basket_names:
-                assignment_df[f'Invoices_{b}'] = counts_df[b].values
+                assignment_df[f'Invoices_{b}']     = invoices_df[b].values
+                assignment_df[f'Revenue_{b}']      = revenue_df[b].values
+                assignment_df[f'RevenueShare_{b}'] = share_df[b].values
             assignment_df = assignment_df.reset_index(drop=True)
             # Rename Insufficient Data to No Segmentation
             assignment_df['AssignedBasket'] = assignment_df['AssignedBasket'].replace(
                 'Insufficient Data', 'No Segmentation'
             )
             st.session_state['basket_assignment'] = assignment_df
+            st.session_state['basket_assignment_metric'] = assign_metric
+            st.session_state['basket_assignment_threshold'] = assign_threshold
 
     # ── Show assignment results ────────────────────────────────────────────
     if 'basket_assignment' in st.session_state:
@@ -1203,8 +1242,24 @@ elif analysis == "Basket Segmentation":
 
         show_df(summary, currency_cols=['TotalSpend'])
 
+        assign_metric_used = st.session_state.get('basket_assignment_metric', 'Invoice Count')
+        assign_threshold_used = st.session_state.get('basket_assignment_threshold')
+        # Derive basket names from whatever's actually in the stored table, so this
+        # still works if baskets were redefined after the assignment last ran
+        basket_names_disp = [c[len('Invoices_'):] for c in assignment_df.columns if c.startswith('Invoices_')]
+
         st.markdown("**Full customer assignment table**")
-        show_df(assignment_df)
+        st.caption(
+            f"Assigned on **{assign_metric_used}** (threshold: {assign_threshold_used}). "
+            "AssignmentStat is the value of that statistic for the customer's assigned basket."
+        )
+        table_currency_cols = [f'Revenue_{b}' for b in basket_names_disp]
+        table_percent_cols  = [f'RevenueShare_{b}' for b in basket_names_disp]
+        if assign_metric_used == "Revenue":
+            table_currency_cols.append('AssignmentStat')
+        elif assign_metric_used == "Revenue Share of Customer Spend":
+            table_percent_cols.append('AssignmentStat')
+        show_df(assignment_df, currency_cols=table_currency_cols, percent_cols=table_percent_cols)
 
         # ── Confirm to use in KVI ──────────────────────────────────────────
         st.markdown("---")
@@ -1223,12 +1278,19 @@ elif analysis == "Basket Segmentation":
             )
             labels['CustomerId'] = labels['CustomerId'].astype(str)
             n_segmented = len(labels)
+            if assign_metric_used == "Invoice Count":
+                threshold_label = f"min {assign_threshold_used} invoices"
+            elif assign_metric_used == "Revenue":
+                threshold_label = f"min {fmt_currency(assign_threshold_used)} revenue"
+            else:
+                threshold_label = f"min {assign_threshold_used:.0f}% revenue share"
             st.session_state['confirmed_specialty'] = {
-                'labels':        labels,
-                'col':           'Basket Segmentation',
-                'threshold':     min_invoices,
-                'n_customers':   n_segmented,
-                'n_specialties': labels['Customer Cluster'].nunique(),
+                'labels':          labels,
+                'col':             'Basket Segmentation',
+                'threshold':       assign_threshold_used,
+                'threshold_label': threshold_label,
+                'n_customers':     n_segmented,
+                'n_specialties':   labels['Customer Cluster'].nunique(),
             }
             st.success(
                 f"Basket segmentation confirmed — {labels['Customer Cluster'].nunique()} groups "
@@ -1828,7 +1890,7 @@ elif analysis == "Customer Specialty":
                 f"Active segmentation: **{cs['col']}** — "
                 f"{cs['n_specialties']} specialties, "
                 f"{cs['n_customers']} customers, "
-                + (f"threshold {cs['threshold']:.0%}" if cs['col'] != 'Basket Segmentation' else f"min {cs['threshold']} invoices")
+                + cs.get('threshold_label', f"threshold {cs['threshold']:.0%}")
             )
 
         confirm = st.checkbox(
@@ -1841,11 +1903,12 @@ elif analysis == "Customer Specialty":
             labels = specialty_df[['CustomerId', 'Specialty']].copy()
             labels['CustomerId'] = labels['CustomerId'].astype(str)
             st.session_state['confirmed_specialty'] = {
-                'labels':        labels,
-                'col':           specialty_col,
-                'threshold':     threshold,
-                'n_customers':   len(specialty_df),
-                'n_specialties': specialty_df['Specialty'].nunique(),
+                'labels':          labels,
+                'col':             specialty_col,
+                'threshold':       threshold,
+                'threshold_label': f"threshold {threshold:.0%}",
+                'n_customers':     len(specialty_df),
+                'n_specialties':   specialty_df['Specialty'].nunique(),
             }
             st.success(
                 f"Segmentation confirmed — {specialty_df['Specialty'].nunique()} groups "
@@ -2119,7 +2182,7 @@ elif analysis == "KVI Classification":
         st.info(
             f"Using confirmed segmentation: "
             f"**{cs['col']}**, "
-            + (f"threshold {cs['threshold']:.0%}" if cs['col'] != 'Basket Segmentation' else f"min {cs['threshold']} invoices")
+            + cs.get('threshold_label', f"threshold {cs['threshold']:.0%}")
             + f", {cs['n_specialties']} groups across {cs['n_customers']} customers."
         )
         seg_source = st.radio(
