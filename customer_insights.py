@@ -506,7 +506,7 @@ def get_sidebar_options(df):
     filter_cat_cols = [
         c for c in df.columns
         if c not in id_cols
-        and 1 < df[c].nunique() < 200
+        and 1 < df[c].nunique() < 1000
         and (
             str(df[c].dtype) in ('object', 'category', 'str', 'string')
             or str(df[c].dtype).startswith('str')
@@ -614,7 +614,7 @@ def get_cat_cols(df, _fp=''):
     return [
         c for c in df.columns
         if c not in id_cols
-        and 1 < df[c].nunique() < 200
+        and 1 < df[c].nunique() < 1000
         and (
             str(df[c].dtype) in ('object', 'category', 'str', 'string')
             or str(df[c].dtype).startswith('str')
