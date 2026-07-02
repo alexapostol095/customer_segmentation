@@ -2044,39 +2044,52 @@ elif analysis == "Time Analysis":
 
                 # ── Headline comparison ─────────────────────────────────────────
                 def _ta_summary(d):
+                    n_lines = len(d)
                     out = {
                         'Revenue':   d['LineRevenue'].sum(),
                         'Quantity':  d['Quantity'].sum(),
                         'Orders':    d['InvoiceId'].nunique(),
                         'Customers': d['CustomerId'].nunique(),
+                        'Lines':     n_lines,
                     }
                     out['AOV'] = out['Revenue'] / out['Orders'] if out['Orders'] else 0
+                    out['AvgQtyPerLine'] = out['Quantity'] / n_lines if n_lines else 0
                     if has_cost:
                         out['Margin'] = d['LineMargin'].sum()
                     return out
 
                 sum_a, sum_b = _ta_summary(df_a), _ta_summary(df_b)
 
-                def _ta_delta_card(label, a_val, b_val, is_currency=True):
+                def _ta_delta_card(label, a_val, b_val, is_currency=True, decimals=0):
                     delta = b_val - a_val
                     pct = (delta / a_val * 100) if a_val else 0
                     sign = '+' if delta >= 0 else ''
                     if is_currency:
                         a_disp, b_disp, d_disp = fmt_currency(a_val), fmt_currency(b_val), fmt_currency(delta)
                     else:
-                        a_disp, b_disp, d_disp = f"{a_val:,.0f}", f"{b_val:,.0f}", f"{delta:,.0f}"
+                        a_disp, b_disp, d_disp = f"{a_val:,.{decimals}f}", f"{b_val:,.{decimals}f}", f"{delta:,.{decimals}f}"
                     metric_card(label, f"{a_disp} → {b_disp}", f"Δ {sign}{d_disp} ({sign}{pct:.1f}%)")
 
                 st.markdown("---")
                 st.markdown('<div class="section-header" style="font-size:1.1rem">Headline comparison</div>', unsafe_allow_html=True)
                 st.caption("Each card shows A → B, with the difference (Δ) below.")
-                metric_cols = st.columns(5 if has_cost else 4)
-                with metric_cols[0]: _ta_delta_card("Revenue", sum_a['Revenue'], sum_b['Revenue'])
-                with metric_cols[1]: _ta_delta_card("Orders", sum_a['Orders'], sum_b['Orders'], is_currency=False)
-                with metric_cols[2]: _ta_delta_card("Active Customers", sum_a['Customers'], sum_b['Customers'], is_currency=False)
-                with metric_cols[3]: _ta_delta_card("Avg Order Value", sum_a['AOV'], sum_b['AOV'])
+
+                headline_metrics = [
+                    ("Revenue",                sum_a['Revenue'],        sum_b['Revenue'],        dict(is_currency=True)),
+                    ("Orders",                 sum_a['Orders'],         sum_b['Orders'],         dict(is_currency=False)),
+                    ("Active Customers",       sum_a['Customers'],      sum_b['Customers'],      dict(is_currency=False)),
+                    ("Avg Order Value",        sum_a['AOV'],            sum_b['AOV'],            dict(is_currency=True)),
+                    ("Avg Qty per Order Line", sum_a['AvgQtyPerLine'],  sum_b['AvgQtyPerLine'],  dict(is_currency=False, decimals=2)),
+                ]
                 if has_cost:
-                    with metric_cols[4]: _ta_delta_card("Margin", sum_a['Margin'], sum_b['Margin'])
+                    headline_metrics.append(("Margin", sum_a['Margin'], sum_b['Margin'], dict(is_currency=True)))
+
+                for i in range(0, len(headline_metrics), 3):
+                    row = headline_metrics[i:i + 3]
+                    row_cols = st.columns(len(row))
+                    for col, (label, a_val, b_val, kwargs) in zip(row_cols, row):
+                        with col:
+                            _ta_delta_card(label, a_val, b_val, **kwargs)
 
                 st.caption(
                     f"Period A: {a_start.date()} – {a_end.date()}   ·   "
