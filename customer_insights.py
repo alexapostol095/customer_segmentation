@@ -2102,6 +2102,7 @@ elif analysis == "Time Analysis":
                         'Revenue':  ('LineRevenue', 'sum'),
                         'Quantity': ('Quantity', 'sum'),
                         'Orders':   ('InvoiceId', 'nunique'),
+                        'Lines':    ('Quantity', 'size'),
                     }
                     if has_cost:
                         agg['Margin'] = ('LineMargin', 'sum')
@@ -2112,17 +2113,25 @@ elif analysis == "Time Analysis":
                     merged['Revenue Δ%'] = merged.apply(
                         lambda r: (r['Revenue Δ'] / r['Revenue_A'] * 100) if r['Revenue_A'] else np.nan, axis=1
                     )
+                    merged['AvgQtyPerLine_A'] = (merged['Quantity_A'] / merged['Lines_A'].replace(0, np.nan)).fillna(0)
+                    merged['AvgQtyPerLine_B'] = (merged['Quantity_B'] / merged['Lines_B'].replace(0, np.nan)).fillna(0)
+                    merged['AOV_A'] = (merged['Revenue_A'] / merged['Orders_A'].replace(0, np.nan)).fillna(0)
+                    merged['AOV_B'] = (merged['Revenue_B'] / merged['Orders_B'].replace(0, np.nan)).fillna(0)
                     if has_cost:
                         merged['Margin Δ'] = merged['Margin_B'] - merged['Margin_A']
                     return merged.sort_values('Revenue Δ', ascending=False)
 
-                def _ta_display_table(cmp_df):
+                def _ta_display_table(cmp_df, show_avg_qty=False):
                     # Values stay numeric (not formatted strings) so the dataframe
                     # widget sorts correctly on magnitude rather than alphabetically.
+                    cols = [c for c in cmp_df.columns if c not in ('AOV_A', 'AOV_B')]
+                    if not show_avg_qty:
+                        cols = [c for c in cols if c not in ('Lines_A', 'Lines_B', 'AvgQtyPerLine_A', 'AvgQtyPerLine_B')]
+                    display_df = cmp_df[cols]
                     currency_cols = ['Revenue_A', 'Revenue_B', 'Revenue Δ']
                     if has_cost:
                         currency_cols += ['Margin_A', 'Margin_B', 'Margin Δ']
-                    show_df(cmp_df, currency_cols=currency_cols, percent_cols=['Revenue Δ%'])
+                    show_df(display_df, currency_cols=currency_cols, percent_cols=['Revenue Δ%'])
 
                 tab_cust, tab_prod, tab_group = st.tabs(["Per Customer", "Per Product", "Per Grouping"])
 
@@ -2130,7 +2139,7 @@ elif analysis == "Time Analysis":
                 with tab_cust:
                     cust_cmp = _ta_build_comparison(df_a, df_b, 'CustomerId')
                     st.markdown(f"**{len(cust_cmp)} customers active in either period**")
-                    _ta_display_table(cust_cmp)
+                    _ta_display_table(cust_cmp, show_avg_qty=True)
 
                     if not cust_cmp.empty:
                         st.markdown("---")
@@ -2140,17 +2149,29 @@ elif analysis == "Time Analysis":
                         row = cust_cmp[cust_cmp['CustomerId'].astype(str) == pick_cust]
                         if not row.empty:
                             r = row.iloc[0]
-                            dc1, dc2, dc3 = st.columns(3)
-                            with dc1: _ta_delta_card("Revenue", r['Revenue_A'], r['Revenue_B'])
-                            with dc2: _ta_delta_card("Orders", r['Orders_A'], r['Orders_B'], is_currency=False)
-                            with dc3: _ta_delta_card("Quantity", r['Quantity_A'], r['Quantity_B'], is_currency=False)
+                            drill_metrics = [
+                                ("Revenue",                r['Revenue_A'],        r['Revenue_B'],        dict(is_currency=True)),
+                                ("Orders",                 r['Orders_A'],         r['Orders_B'],         dict(is_currency=False)),
+                                ("Quantity",               r['Quantity_A'],       r['Quantity_B'],       dict(is_currency=False)),
+                                ("Avg Order Value",        r['AOV_A'],            r['AOV_B'],            dict(is_currency=True)),
+                                ("Avg Qty per Order Line", r['AvgQtyPerLine_A'],  r['AvgQtyPerLine_B'],  dict(is_currency=False, decimals=2)),
+                            ]
+                            if has_cost:
+                                drill_metrics.append(("Margin", r['Margin_A'], r['Margin_B'], dict(is_currency=True)))
+
+                            for i in range(0, len(drill_metrics), 3):
+                                drow = drill_metrics[i:i + 3]
+                                drow_cols = st.columns(len(drow))
+                                for col, (label, a_val, b_val, kwargs) in zip(drow_cols, drow):
+                                    with col:
+                                        _ta_delta_card(label, a_val, b_val, **kwargs)
 
                 # ── Per product ──────────────────────────────────────────────────
                 with tab_prod:
                     prod_cmp = _ta_build_comparison(df_a, df_b, 'ProductId')
                     prod_cmp = enrich_with_product_name(prod_cmp, fdf, id_col='ProductId')
                     st.markdown(f"**{len(prod_cmp)} products sold in either period**")
-                    _ta_display_table(prod_cmp)
+                    _ta_display_table(prod_cmp, show_avg_qty=True)
 
                 # ── Per grouping ─────────────────────────────────────────────────
                 with tab_group:
@@ -2160,7 +2181,7 @@ elif analysis == "Time Analysis":
                         group_col_choice = st.selectbox("Group by", cat_cols, key="ta_group_col")
                         group_cmp = _ta_build_comparison(df_a, df_b, group_col_choice)
                         st.markdown(f"**{len(group_cmp)} groups active in either period**")
-                        _ta_display_table(group_cmp)
+                        _ta_display_table(group_cmp, show_avg_qty=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 8 — KVI CLASSIFICATION
