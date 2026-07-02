@@ -521,6 +521,7 @@ with st.sidebar:
         "Category Breakdown",
         "Repeat Purchases",
         "Customer Specialty",
+        "Time Analysis",
         "Basket Exploration",
         "Basket Segmentation",
         "KVI Classification",
@@ -1922,7 +1923,196 @@ elif analysis == "Customer Specialty":
         show_df(cust_display[cust_display['Spend'] != '€0'])
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VIEW 7 — KVI CLASSIFICATION
+# VIEW 7 — TIME ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
+elif analysis == "Time Analysis":
+    st.markdown('<div class="section-header">Time Analysis</div>', unsafe_allow_html=True)
+
+    if 'CreatedDate' not in fdf.columns or fdf['CreatedDate'].dropna().empty:
+        st.info("No date column available to compare timeframes.")
+    else:
+        ta_min = fdf['CreatedDate'].min().date()
+        ta_max = fdf['CreatedDate'].max().date()
+        ta_mid = ta_min + (ta_max - ta_min) // 2
+
+        st.markdown("Pick two date ranges to compare performance between them.")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Period A**")
+            period_a = st.date_input(
+                "Period A range", value=(ta_min, ta_mid),
+                min_value=ta_min, max_value=ta_max, key="ta_period_a"
+            )
+        with col_b:
+            st.markdown("**Period B**")
+            period_b = st.date_input(
+                "Period B range", value=(min(ta_mid + pd.Timedelta(days=1), ta_max), ta_max),
+                min_value=ta_min, max_value=ta_max, key="ta_period_b"
+            )
+
+        if len(period_a) != 2 or len(period_b) != 2:
+            st.warning("Select a start and end date for both periods.")
+        else:
+            a_start, a_end = pd.Timestamp(period_a[0]), pd.Timestamp(period_a[1])
+            b_start, b_end = pd.Timestamp(period_b[0]), pd.Timestamp(period_b[1])
+
+            df_a = fdf[(fdf['CreatedDate'] >= a_start) & (fdf['CreatedDate'] <= a_end)]
+            df_b = fdf[(fdf['CreatedDate'] >= b_start) & (fdf['CreatedDate'] <= b_end)]
+
+            has_cost = 'TotalCostPerUnit' in fdf.columns
+            if has_cost:
+                df_a = df_a.assign(LineMargin=(df_a['PricePerUnit'] - df_a['TotalCostPerUnit']) * df_a['Quantity'])
+                df_b = df_b.assign(LineMargin=(df_b['PricePerUnit'] - df_b['TotalCostPerUnit']) * df_b['Quantity'])
+
+            if df_a.empty or df_b.empty:
+                st.warning("One or both periods contain no data. Adjust the date ranges and try again.")
+            else:
+                if a_start <= b_end and b_start <= a_end:
+                    st.caption("Note: the selected periods overlap.")
+
+                # ── Headline comparison ─────────────────────────────────────────
+                def _ta_summary(d):
+                    out = {
+                        'Revenue':   d['LineRevenue'].sum(),
+                        'Quantity':  d['Quantity'].sum(),
+                        'Orders':    d['InvoiceId'].nunique(),
+                        'Customers': d['CustomerId'].nunique(),
+                    }
+                    out['AOV'] = out['Revenue'] / out['Orders'] if out['Orders'] else 0
+                    if has_cost:
+                        out['Margin'] = d['LineMargin'].sum()
+                    return out
+
+                sum_a, sum_b = _ta_summary(df_a), _ta_summary(df_b)
+
+                def _ta_delta_card(label, a_val, b_val, is_currency=True):
+                    delta = b_val - a_val
+                    pct = (delta / a_val * 100) if a_val else 0
+                    sign = '+' if delta >= 0 else ''
+                    b_disp = fmt_currency(b_val) if is_currency else f"{b_val:,.0f}"
+                    a_disp = fmt_currency(a_val) if is_currency else f"{a_val:,.0f}"
+                    metric_card(label, b_disp, f"{sign}{pct:.1f}% vs A ({a_disp})")
+
+                st.markdown("---")
+                st.markdown('<div class="section-header" style="font-size:1.1rem">Headline comparison</div>', unsafe_allow_html=True)
+                metric_cols = st.columns(5 if has_cost else 4)
+                with metric_cols[0]: _ta_delta_card("Revenue (B)", sum_a['Revenue'], sum_b['Revenue'])
+                with metric_cols[1]: _ta_delta_card("Orders (B)", sum_a['Orders'], sum_b['Orders'], is_currency=False)
+                with metric_cols[2]: _ta_delta_card("Active Customers (B)", sum_a['Customers'], sum_b['Customers'], is_currency=False)
+                with metric_cols[3]: _ta_delta_card("Avg Order Value (B)", sum_a['AOV'], sum_b['AOV'])
+                if has_cost:
+                    with metric_cols[4]: _ta_delta_card("Margin (B)", sum_a['Margin'], sum_b['Margin'])
+
+                st.caption(
+                    f"Period A: {a_start.date()} – {a_end.date()}   ·   "
+                    f"Period B: {b_start.date()} – {b_end.date()}"
+                )
+
+                # ── Shared helpers for the three breakdown tabs ─────────────────
+                def _ta_build_comparison(d_a, d_b, group_col):
+                    agg = {
+                        'Revenue':  ('LineRevenue', 'sum'),
+                        'Quantity': ('Quantity', 'sum'),
+                        'Orders':   ('InvoiceId', 'nunique'),
+                    }
+                    if has_cost:
+                        agg['Margin'] = ('LineMargin', 'sum')
+                    a_g = d_a.groupby(group_col).agg(**agg).reset_index()
+                    b_g = d_b.groupby(group_col).agg(**agg).reset_index()
+                    merged = a_g.merge(b_g, on=group_col, how='outer', suffixes=('_A', '_B')).fillna(0)
+                    merged['Revenue Δ'] = merged['Revenue_B'] - merged['Revenue_A']
+                    merged['Revenue Δ%'] = merged.apply(
+                        lambda r: (r['Revenue Δ'] / r['Revenue_A'] * 100) if r['Revenue_A'] else np.nan, axis=1
+                    )
+                    if has_cost:
+                        merged['Margin Δ'] = merged['Margin_B'] - merged['Margin_A']
+                    return merged.sort_values('Revenue Δ', ascending=False)
+
+                def _ta_topn_chart(cmp_df, id_col, label_col, color, key):
+                    n_avail = len(cmp_df)
+                    if n_avail == 0:
+                        st.info("No activity in either period.")
+                        return
+                    if n_avail > 5:
+                        top_n = st.slider(
+                            "Show top N by revenue change", 5, min(50, n_avail), min(15, n_avail),
+                            key=f"{key}_topn"
+                        )
+                    else:
+                        top_n = n_avail
+                    half = max(1, top_n // 2)
+                    chart_data = (
+                        pd.concat([cmp_df.head(half), cmp_df.tail(top_n - half)])
+                        .drop_duplicates(id_col)
+                        .sort_values('Revenue Δ')
+                    )
+                    fig, ax = plt.subplots(figsize=(8, max(3, len(chart_data) * 0.35)))
+                    colors = [color if v >= 0 else PALETTE[3] for v in chart_data['Revenue Δ']]
+                    ax.barh(chart_data[label_col].astype(str), chart_data['Revenue Δ'], color=colors, alpha=0.85)
+                    ax.axvline(0, color='#d4cfc7', linewidth=0.8)
+                    ax.xaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
+                    ax.set_title("Revenue change, Period A → B", fontsize=9)
+                    ax.spines[['top', 'right']].set_visible(False)
+                    ax.tick_params(labelsize=8)
+                    fig.tight_layout()
+                    st.pyplot(fig); plt.close()
+
+                def _ta_display_table(cmp_df):
+                    display = cmp_df.copy()
+                    money_cols = ['Revenue_A', 'Revenue_B', 'Revenue Δ']
+                    if has_cost:
+                        money_cols += ['Margin_A', 'Margin_B', 'Margin Δ']
+                    for col in money_cols:
+                        display[col] = display[col].map(fmt_currency)
+                    display['Revenue Δ%'] = display['Revenue Δ%'].map(
+                        lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"
+                    )
+                    show_df(display)
+
+                tab_cust, tab_prod, tab_group = st.tabs(["Per Customer", "Per Product", "Per Grouping"])
+
+                # ── Per customer ─────────────────────────────────────────────────
+                with tab_cust:
+                    cust_cmp = _ta_build_comparison(df_a, df_b, 'CustomerId')
+                    st.markdown(f"**{len(cust_cmp)} customers active in either period**")
+                    _ta_topn_chart(cust_cmp, 'CustomerId', 'CustomerId', PALETTE[0], "ta_cust")
+                    _ta_display_table(cust_cmp)
+
+                    if not cust_cmp.empty:
+                        st.markdown("---")
+                        st.markdown("**Drill into a single customer**")
+                        cust_options = sorted(cust_cmp['CustomerId'].astype(str).unique().tolist())
+                        pick_cust = st.selectbox("Customer", cust_options, key="ta_cust_pick")
+                        row = cust_cmp[cust_cmp['CustomerId'].astype(str) == pick_cust]
+                        if not row.empty:
+                            r = row.iloc[0]
+                            dc1, dc2, dc3 = st.columns(3)
+                            with dc1: metric_card("Revenue A → B", f"{fmt_currency(r['Revenue_A'])} → {fmt_currency(r['Revenue_B'])}")
+                            with dc2: metric_card("Orders A → B", f"{int(r['Orders_A'])} → {int(r['Orders_B'])}")
+                            with dc3: metric_card("Quantity A → B", f"{int(r['Quantity_A'])} → {int(r['Quantity_B'])}")
+
+                # ── Per product ──────────────────────────────────────────────────
+                with tab_prod:
+                    prod_cmp = _ta_build_comparison(df_a, df_b, 'ProductId')
+                    prod_cmp = enrich_with_product_name(prod_cmp, fdf, id_col='ProductId')
+                    label_col = 'ProductName' if 'ProductName' in prod_cmp.columns else 'ProductId'
+                    st.markdown(f"**{len(prod_cmp)} products sold in either period**")
+                    _ta_topn_chart(prod_cmp, 'ProductId', label_col, PALETTE[1], "ta_prod")
+                    _ta_display_table(prod_cmp)
+
+                # ── Per grouping ─────────────────────────────────────────────────
+                with tab_group:
+                    if not cat_cols:
+                        st.info("No categorical columns available for grouping.")
+                    else:
+                        group_col_choice = st.selectbox("Group by", cat_cols, key="ta_group_col")
+                        group_cmp = _ta_build_comparison(df_a, df_b, group_col_choice)
+                        st.markdown(f"**{len(group_cmp)} groups active in either period**")
+                        _ta_topn_chart(group_cmp, group_col_choice, group_col_choice, PALETTE[2], "ta_group")
+                        _ta_display_table(group_cmp)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW 8 — KVI CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 elif analysis == "KVI Classification":
     st.markdown('<div class="section-header">KVI Classification</div>', unsafe_allow_html=True)
@@ -2177,7 +2367,7 @@ elif analysis == "KVI Classification":
         )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VIEW 8 — PRICING SIMULATION
+# VIEW 9 — PRICING SIMULATION
 # ══════════════════════════════════════════════════════════════════════════════
 elif analysis == "Pricing Simulation":
     st.markdown('<div class="section-header">Pricing Simulation</div>', unsafe_allow_html=True)
