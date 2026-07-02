@@ -262,13 +262,28 @@ def metric_card(label, value, sub=""):
         {'<div class="sub">' + sub + '</div>' if sub else ''}
     </div>""", unsafe_allow_html=True)
 
-def show_df(data, hide_index=True):
+def show_df(data, hide_index=True, currency_cols=None, percent_cols=None):
     """Display a full-width dataframe, compatible with both old Streamlit
-    (use_container_width=True) and new Streamlit (width='stretch') APIs."""
+    (use_container_width=True) and new Streamlit (width='stretch') APIs.
+
+    currency_cols / percent_cols: optional list of column names that hold
+    raw numeric values which should be *displayed* with € / % formatting
+    while remaining numeric under the hood, so sorting/filtering in the
+    dataframe widget stays numerically correct instead of alphabetical."""
+    column_config = {}
+    if currency_cols:
+        for col in currency_cols:
+            if col in data.columns:
+                column_config[col] = st.column_config.NumberColumn(col, format="€ %,.2f")
+    if percent_cols:
+        for col in percent_cols:
+            if col in data.columns:
+                column_config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
+    column_config = column_config or None
     try:
-        st.dataframe(data, width='stretch', hide_index=hide_index)
+        st.dataframe(data, width='stretch', hide_index=hide_index, column_config=column_config)
     except TypeError:
-        st.dataframe(data, use_container_width=True, hide_index=hide_index)
+        st.dataframe(data, use_container_width=True, hide_index=hide_index, column_config=column_config)
 
 def show_chart(fig):
     """Display a full-width Plotly chart, compatible with both Streamlit width APIs."""
@@ -721,9 +736,7 @@ elif analysis == "Category Breakdown":
             .reset_index()
         )
         grp_summary['RevenueShare'] = (grp_summary['Revenue'] / grp_summary['Revenue'].sum()).map('{:.1%}'.format)
-        grp_summary['AvgOrderValue'] = grp_summary['AvgOrderValue'].map(lambda x: f"€{x:,.2f}")
-        grp_summary['Revenue']       = grp_summary['Revenue'].map(fmt_currency)
-        show_df(grp_summary)
+        show_df(grp_summary, currency_cols=['Revenue', 'AvgOrderValue'])
 
     with tab2:
         cust_id = st.selectbox("Select customer", sorted(fdf['CustomerId'].unique().tolist()), key="cb_cust")
@@ -739,10 +752,10 @@ elif analysis == "Category Breakdown":
         cust_grp_share = cust_grp / cust_grp.sum()
         cust_grp_df = pd.DataFrame({
             group_col: cust_grp.index,
-            'Spend': cust_grp.map(fmt_currency).values,
+            'Spend': cust_grp.values,
             'Share': cust_grp_share.map('{:.1%}'.format).values,
         })
-        show_df(cust_grp_df[cust_grp_df['Spend'] != '€0'])
+        show_df(cust_grp_df[cust_grp_df['Spend'] != 0], currency_cols=['Spend'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 4 — REPEAT PURCHASES
@@ -766,9 +779,8 @@ elif analysis == "Repeat Purchases":
             .sort_values('RepeatCustomers', ascending=False)
             .reset_index()
         )
-        top_repeat['TotalSpend']    = top_repeat['TotalSpend'].map(fmt_currency)
         top_repeat['AvgOrderCount'] = top_repeat['AvgOrderCount'].map('{:.1f}'.format)
-        show_df(enrich_with_product_name(top_repeat, fdf))
+        show_df(enrich_with_product_name(top_repeat, fdf), currency_cols=['TotalSpend'])
 
     with tab2:
         rp_col = st.selectbox(
@@ -829,8 +841,10 @@ elif analysis == "Repeat Purchases":
             with c2: metric_card("Repeat Spend", fmt_currency(cust_repeats['TotalSpend'].sum()))
 
             cust_repeats = cust_repeats.sort_values('OrderCount', ascending=False)
-            cust_repeats['TotalSpend'] = cust_repeats['TotalSpend'].map(fmt_currency)
-            show_df(enrich_with_product_name(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']], fdf))
+            show_df(
+                enrich_with_product_name(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']], fdf),
+                currency_cols=['TotalSpend']
+            )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1180,7 +1194,6 @@ elif analysis == "Basket Segmentation":
         assignment_enriched = assignment_df.merge(cust_spend_df, on='CustomerId', how='left')
         rev_summary = assignment_enriched.groupby('AssignedBasket')['TotalSpend'].sum().reset_index()
         summary = summary.merge(rev_summary, on='AssignedBasket', how='left')
-        summary['TotalSpend'] = summary['TotalSpend'].map(fmt_currency)
 
         c1, c2, c3 = st.columns(3)
         assigned_n = (assignment_df['AssignedBasket'].isin(st.session_state['defined_baskets'])).sum()
@@ -1188,7 +1201,7 @@ elif analysis == "Basket Segmentation":
         with c2: metric_card("Unclassified", str((assignment_df['AssignedBasket'] == 'Unclassified').sum()))
         with c3: metric_card("No Segmentation", str((assignment_df['AssignedBasket'] == 'No Segmentation').sum()))
 
-        show_df(summary)
+        show_df(summary, currency_cols=['TotalSpend'])
 
         st.markdown("**Full customer assignment table**")
         show_df(assignment_df)
@@ -1633,13 +1646,11 @@ elif analysis == "Basket Exploration":
                 )
                 cust_agg = cust_agg.merge(top_cat, on='CustomerId', how='left')
 
-            cust_agg['BasketRevenue'] = cust_agg['BasketRevenue'].map(fmt_currency)
-            cust_agg['TotalSpend']    = cust_agg['TotalSpend'].map(fmt_currency)
-            if has_cost_exp and 'TotalMargin' in cust_agg.columns:
-                cust_agg['TotalMargin'] = cust_agg['TotalMargin'].map(fmt_currency)
-
             st.markdown("**Customers who ordered this basket**")
-            show_df(cust_agg)
+            cust_agg_currency_cols = ['BasketRevenue', 'TotalSpend']
+            if has_cost_exp and 'TotalMargin' in cust_agg.columns:
+                cust_agg_currency_cols.append('TotalMargin')
+            show_df(cust_agg, currency_cols=cust_agg_currency_cols)
 
             # What else do these customers buy outside the basket
             st.markdown("**What else do these customers commonly buy?**")
@@ -1659,10 +1670,10 @@ elif analysis == "Basket Exploration":
                 .head(20)
             )
             other['CustomerRate'] = (other['CustomerCount'] / len(basket_customers)).map('{:.1%}'.format)
-            other['TotalRevenue'] = other['TotalRevenue'].map(fmt_currency)
+            other_currency_cols = ['TotalRevenue']
             if has_cost_exp and 'TotalMargin' in other.columns:
-                other['TotalMargin'] = other['TotalMargin'].map(fmt_currency)
-            show_df(other)
+                other_currency_cols.append('TotalMargin')
+            show_df(other, currency_cols=other_currency_cols)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 6 — CUSTOMER SPECIALTY
@@ -1743,12 +1754,10 @@ elif analysis == "Customer Specialty":
 
         # Format for display
         display_summary = specialty_summary.copy()
-        display_summary['TotalSpend']   = display_summary['TotalSpend'].map(fmt_currency)
-        display_summary['AvgSpend']     = display_summary['AvgSpend'].map(fmt_currency)
         display_summary['AvgShare']     = display_summary['AvgShare'].map('{:.1%}'.format)
         display_summary['AvgRecency']   = display_summary['AvgRecency'].map('{:.0f} days'.format)
         display_summary['AvgFrequency'] = display_summary['AvgFrequency'].map('{:.1f}'.format)
-        show_df(display_summary)
+        show_df(display_summary, currency_cols=['TotalSpend', 'AvgSpend'])
 
         st.markdown("")
         col_a, col_b = st.columns(2)
@@ -1801,13 +1810,13 @@ elif analysis == "Customer Specialty":
             ]
 
         display_customers = display_customers.sort_values('TotalSpend', ascending=False).copy()
-        display_customers['TotalSpend']      = display_customers['TotalSpend'].map(fmt_currency)
         display_customers['SpecialtyShare']  = display_customers['SpecialtyShare'].map('{:.1%}'.format)
         display_customers['Recency']         = display_customers['Recency'].map('{:.0f} days'.format)
 
         show_df(
             display_customers[['CustomerId', 'Specialty', 'SpecialtyShare',
-                                'TotalSpend', 'Frequency', 'Recency']]
+                                'TotalSpend', 'Frequency', 'Recency']],
+            currency_cols=['TotalSpend']
         )
 
         st.markdown("---")
@@ -1875,10 +1884,10 @@ elif analysis == "Customer Specialty":
                 .head(15)
                 .copy()
             )
-            top_spec_custs['TotalSpend']     = top_spec_custs['TotalSpend'].map(fmt_currency)
             top_spec_custs['SpecialtyShare'] = top_spec_custs['SpecialtyShare'].map('{:.1%}'.format)
             show_df(
-                top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']]
+                top_spec_custs[['CustomerId', 'TotalSpend', 'SpecialtyShare', 'Frequency', 'Recency']],
+                currency_cols=['TotalSpend']
             )
 
         with col_b:
@@ -1917,10 +1926,10 @@ elif analysis == "Customer Specialty":
 
         cust_display = pd.DataFrame({
             specialty_col: cust_grp_spend.index,
-            'Spend':       cust_grp_spend.map(fmt_currency).values,
+            'Spend':       cust_grp_spend.values,
             'Share':       cust_grp_share.map('{:.1%}'.format).values,
         })
-        show_df(cust_display[cust_display['Spend'] != '€0'])
+        show_df(cust_display[cust_display['Spend'] != 0], currency_cols=['Spend'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 7 — TIME ANALYSIS
@@ -1989,19 +1998,22 @@ elif analysis == "Time Analysis":
                     delta = b_val - a_val
                     pct = (delta / a_val * 100) if a_val else 0
                     sign = '+' if delta >= 0 else ''
-                    b_disp = fmt_currency(b_val) if is_currency else f"{b_val:,.0f}"
-                    a_disp = fmt_currency(a_val) if is_currency else f"{a_val:,.0f}"
-                    metric_card(label, b_disp, f"{sign}{pct:.1f}% vs A ({a_disp})")
+                    if is_currency:
+                        a_disp, b_disp, d_disp = fmt_currency(a_val), fmt_currency(b_val), fmt_currency(delta)
+                    else:
+                        a_disp, b_disp, d_disp = f"{a_val:,.0f}", f"{b_val:,.0f}", f"{delta:,.0f}"
+                    metric_card(label, f"{a_disp} → {b_disp}", f"Δ {sign}{d_disp} ({sign}{pct:.1f}%)")
 
                 st.markdown("---")
                 st.markdown('<div class="section-header" style="font-size:1.1rem">Headline comparison</div>', unsafe_allow_html=True)
+                st.caption("Each card shows A → B, with the difference (Δ) below.")
                 metric_cols = st.columns(5 if has_cost else 4)
-                with metric_cols[0]: _ta_delta_card("Revenue (B)", sum_a['Revenue'], sum_b['Revenue'])
-                with metric_cols[1]: _ta_delta_card("Orders (B)", sum_a['Orders'], sum_b['Orders'], is_currency=False)
-                with metric_cols[2]: _ta_delta_card("Active Customers (B)", sum_a['Customers'], sum_b['Customers'], is_currency=False)
-                with metric_cols[3]: _ta_delta_card("Avg Order Value (B)", sum_a['AOV'], sum_b['AOV'])
+                with metric_cols[0]: _ta_delta_card("Revenue", sum_a['Revenue'], sum_b['Revenue'])
+                with metric_cols[1]: _ta_delta_card("Orders", sum_a['Orders'], sum_b['Orders'], is_currency=False)
+                with metric_cols[2]: _ta_delta_card("Active Customers", sum_a['Customers'], sum_b['Customers'], is_currency=False)
+                with metric_cols[3]: _ta_delta_card("Avg Order Value", sum_a['AOV'], sum_b['AOV'])
                 if has_cost:
-                    with metric_cols[4]: _ta_delta_card("Margin (B)", sum_a['Margin'], sum_b['Margin'])
+                    with metric_cols[4]: _ta_delta_card("Margin", sum_a['Margin'], sum_b['Margin'])
 
                 st.caption(
                     f"Period A: {a_start.date()} – {a_end.date()}   ·   "
@@ -2028,46 +2040,13 @@ elif analysis == "Time Analysis":
                         merged['Margin Δ'] = merged['Margin_B'] - merged['Margin_A']
                     return merged.sort_values('Revenue Δ', ascending=False)
 
-                def _ta_topn_chart(cmp_df, id_col, label_col, color, key):
-                    n_avail = len(cmp_df)
-                    if n_avail == 0:
-                        st.info("No activity in either period.")
-                        return
-                    if n_avail > 5:
-                        top_n = st.slider(
-                            "Show top N by revenue change", 5, min(50, n_avail), min(15, n_avail),
-                            key=f"{key}_topn"
-                        )
-                    else:
-                        top_n = n_avail
-                    half = max(1, top_n // 2)
-                    chart_data = (
-                        pd.concat([cmp_df.head(half), cmp_df.tail(top_n - half)])
-                        .drop_duplicates(id_col)
-                        .sort_values('Revenue Δ')
-                    )
-                    fig, ax = plt.subplots(figsize=(8, max(3, len(chart_data) * 0.35)))
-                    colors = [color if v >= 0 else PALETTE[3] for v in chart_data['Revenue Δ']]
-                    ax.barh(chart_data[label_col].astype(str), chart_data['Revenue Δ'], color=colors, alpha=0.85)
-                    ax.axvline(0, color='#d4cfc7', linewidth=0.8)
-                    ax.xaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
-                    ax.set_title("Revenue change, Period A → B", fontsize=9)
-                    ax.spines[['top', 'right']].set_visible(False)
-                    ax.tick_params(labelsize=8)
-                    fig.tight_layout()
-                    st.pyplot(fig); plt.close()
-
                 def _ta_display_table(cmp_df):
-                    display = cmp_df.copy()
-                    money_cols = ['Revenue_A', 'Revenue_B', 'Revenue Δ']
+                    # Values stay numeric (not formatted strings) so the dataframe
+                    # widget sorts correctly on magnitude rather than alphabetically.
+                    currency_cols = ['Revenue_A', 'Revenue_B', 'Revenue Δ']
                     if has_cost:
-                        money_cols += ['Margin_A', 'Margin_B', 'Margin Δ']
-                    for col in money_cols:
-                        display[col] = display[col].map(fmt_currency)
-                    display['Revenue Δ%'] = display['Revenue Δ%'].map(
-                        lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"
-                    )
-                    show_df(display)
+                        currency_cols += ['Margin_A', 'Margin_B', 'Margin Δ']
+                    show_df(cmp_df, currency_cols=currency_cols, percent_cols=['Revenue Δ%'])
 
                 tab_cust, tab_prod, tab_group = st.tabs(["Per Customer", "Per Product", "Per Grouping"])
 
@@ -2075,7 +2054,6 @@ elif analysis == "Time Analysis":
                 with tab_cust:
                     cust_cmp = _ta_build_comparison(df_a, df_b, 'CustomerId')
                     st.markdown(f"**{len(cust_cmp)} customers active in either period**")
-                    _ta_topn_chart(cust_cmp, 'CustomerId', 'CustomerId', PALETTE[0], "ta_cust")
                     _ta_display_table(cust_cmp)
 
                     if not cust_cmp.empty:
@@ -2087,17 +2065,15 @@ elif analysis == "Time Analysis":
                         if not row.empty:
                             r = row.iloc[0]
                             dc1, dc2, dc3 = st.columns(3)
-                            with dc1: metric_card("Revenue A → B", f"{fmt_currency(r['Revenue_A'])} → {fmt_currency(r['Revenue_B'])}")
-                            with dc2: metric_card("Orders A → B", f"{int(r['Orders_A'])} → {int(r['Orders_B'])}")
-                            with dc3: metric_card("Quantity A → B", f"{int(r['Quantity_A'])} → {int(r['Quantity_B'])}")
+                            with dc1: _ta_delta_card("Revenue", r['Revenue_A'], r['Revenue_B'])
+                            with dc2: _ta_delta_card("Orders", r['Orders_A'], r['Orders_B'], is_currency=False)
+                            with dc3: _ta_delta_card("Quantity", r['Quantity_A'], r['Quantity_B'], is_currency=False)
 
                 # ── Per product ──────────────────────────────────────────────────
                 with tab_prod:
                     prod_cmp = _ta_build_comparison(df_a, df_b, 'ProductId')
                     prod_cmp = enrich_with_product_name(prod_cmp, fdf, id_col='ProductId')
-                    label_col = 'ProductName' if 'ProductName' in prod_cmp.columns else 'ProductId'
                     st.markdown(f"**{len(prod_cmp)} products sold in either period**")
-                    _ta_topn_chart(prod_cmp, 'ProductId', label_col, PALETTE[1], "ta_prod")
                     _ta_display_table(prod_cmp)
 
                 # ── Per grouping ─────────────────────────────────────────────────
@@ -2108,7 +2084,6 @@ elif analysis == "Time Analysis":
                         group_col_choice = st.selectbox("Group by", cat_cols, key="ta_group_col")
                         group_cmp = _ta_build_comparison(df_a, df_b, group_col_choice)
                         st.markdown(f"**{len(group_cmp)} groups active in either period**")
-                        _ta_topn_chart(group_cmp, group_col_choice, group_col_choice, PALETTE[2], "ta_group")
                         _ta_display_table(group_cmp)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2220,8 +2195,6 @@ elif analysis == "KVI Classification":
 
     def display_category_tab(cat_name):
         sub = kvi_df[kvi_df['Category'] == cat_name].copy()
-        sub['Price']   = sub['Price'].map(lambda x: f"€{x:,.2f}")
-        sub['Revenue'] = sub['Revenue'].map(fmt_currency)
         sub['Demand_Proportion']         = sub['Demand_Proportion'].map('{:.2%}'.format)
         sub['Revenue_Proportion']        = sub['Revenue_Proportion'].map('{:.2%}'.format)
         sub['UniqueCustomers_Proportion'] = sub['UniqueCustomers_Proportion'].map('{:.2%}'.format)
@@ -2233,7 +2206,8 @@ elif analysis == "KVI Classification":
                      'PurchaseCount', 'Demand_Proportion', 'Revenue_Proportion',
                      'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
                 fdf
-            )
+            ),
+            currency_cols=['Price', 'Revenue']
         )
 
     with tab1:
@@ -2571,13 +2545,15 @@ elif analysis == "Pricing Simulation":
         )
         seg_results['RevenueDelta'] = seg_results['NewRevenue'] - seg_results['BaseRevenue']
         seg_results['MarginDelta']  = seg_results['NewMargin']  - seg_results['BaseMargin']
-        seg_results['Revenue∆%']    = (seg_results['RevenueDelta'] / seg_results['BaseRevenue'] * 100).map('{:+.2f}%'.format)
-        seg_results['Margin∆%']     = (seg_results['MarginDelta']  / seg_results['BaseMargin']  * 100).map('{:+.2f}%'.format)
+        seg_results['Revenue∆%']    = seg_results['RevenueDelta'] / seg_results['BaseRevenue'] * 100
+        seg_results['Margin∆%']     = seg_results['MarginDelta']  / seg_results['BaseMargin']  * 100
 
         seg_display = seg_results.copy()
-        for col in ['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta']:
-            seg_display[col] = seg_display[col].map(fmt_currency)
-        show_df(seg_display)
+        show_df(
+            seg_display,
+            currency_cols=['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta'],
+            percent_cols=['Revenue∆%', 'Margin∆%']
+        )
 
         # Per-category breakdown
         st.markdown("**Impact by product category**")
@@ -2593,13 +2569,15 @@ elif analysis == "Pricing Simulation":
         )
         cat_results['RevenueDelta'] = cat_results['NewRevenue'] - cat_results['BaseRevenue']
         cat_results['MarginDelta']  = cat_results['NewMargin']  - cat_results['BaseMargin']
-        cat_results['Revenue∆%']    = (cat_results['RevenueDelta'] / cat_results['BaseRevenue'] * 100).map('{:+.2f}%'.format)
-        cat_results['Margin∆%']     = (cat_results['MarginDelta']  / cat_results['BaseMargin']  * 100).map('{:+.2f}%'.format)
+        cat_results['Revenue∆%']    = cat_results['RevenueDelta'] / cat_results['BaseRevenue'] * 100
+        cat_results['Margin∆%']     = cat_results['MarginDelta']  / cat_results['BaseMargin']  * 100
 
         cat_display = cat_results.copy()
-        for col in ['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta']:
-            cat_display[col] = cat_display[col].map(fmt_currency)
-        show_df(cat_display)
+        show_df(
+            cat_display,
+            currency_cols=['BaseRevenue','NewRevenue','RevenueDelta','BaseMargin','NewMargin','MarginDelta'],
+            percent_cols=['Revenue∆%', 'Margin∆%']
+        )
 
         # Charts
         st.markdown("**Revenue & Margin delta by segment**")
