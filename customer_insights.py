@@ -2113,8 +2113,10 @@ elif analysis == "Time Analysis":
                     merged['Revenue Δ%'] = merged.apply(
                         lambda r: (r['Revenue Δ'] / r['Revenue_A'] * 100) if r['Revenue_A'] else np.nan, axis=1
                     )
+                    merged['Lines Δ'] = merged['Lines_B'] - merged['Lines_A']
                     merged['AvgQtyPerLine_A'] = (merged['Quantity_A'] / merged['Lines_A'].replace(0, np.nan)).fillna(0)
                     merged['AvgQtyPerLine_B'] = (merged['Quantity_B'] / merged['Lines_B'].replace(0, np.nan)).fillna(0)
+                    merged['AvgQtyPerLine Δ'] = merged['AvgQtyPerLine_B'] - merged['AvgQtyPerLine_A']
                     merged['AOV_A'] = (merged['Revenue_A'] / merged['Orders_A'].replace(0, np.nan)).fillna(0)
                     merged['AOV_B'] = (merged['Revenue_B'] / merged['Orders_B'].replace(0, np.nan)).fillna(0)
                     if has_cost:
@@ -2126,7 +2128,10 @@ elif analysis == "Time Analysis":
                     # widget sorts correctly on magnitude rather than alphabetically.
                     cols = [c for c in cmp_df.columns if c not in ('AOV_A', 'AOV_B')]
                     if not show_avg_qty:
-                        cols = [c for c in cols if c not in ('Lines_A', 'Lines_B', 'AvgQtyPerLine_A', 'AvgQtyPerLine_B')]
+                        cols = [
+                            c for c in cols
+                            if c not in ('Lines_A', 'Lines_B', 'Lines Δ', 'AvgQtyPerLine_A', 'AvgQtyPerLine_B', 'AvgQtyPerLine Δ')
+                        ]
                     display_df = cmp_df[cols]
                     currency_cols = ['Revenue_A', 'Revenue_B', 'Revenue Δ']
                     if has_cost:
