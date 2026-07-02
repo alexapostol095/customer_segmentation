@@ -2097,7 +2097,7 @@ elif analysis == "Time Analysis":
                 )
 
                 # ── Shared helpers for the three breakdown tabs ─────────────────
-                def _ta_build_comparison(d_a, d_b, group_col):
+                def _ta_build_comparison(d_a, d_b, group_col, only_both=False):
                     agg = {
                         'Revenue':  ('LineRevenue', 'sum'),
                         'Quantity': ('Quantity', 'sum'),
@@ -2108,7 +2108,7 @@ elif analysis == "Time Analysis":
                         agg['Margin'] = ('LineMargin', 'sum')
                     a_g = d_a.groupby(group_col).agg(**agg).reset_index()
                     b_g = d_b.groupby(group_col).agg(**agg).reset_index()
-                    merged = a_g.merge(b_g, on=group_col, how='outer', suffixes=('_A', '_B')).fillna(0)
+                    merged = a_g.merge(b_g, on=group_col, how=('inner' if only_both else 'outer'), suffixes=('_A', '_B')).fillna(0)
                     merged['Revenue Δ'] = merged['Revenue_B'] - merged['Revenue_A']
                     merged['Revenue Δ%'] = merged.apply(
                         lambda r: (r['Revenue Δ'] / r['Revenue_A'] * 100) if r['Revenue_A'] else np.nan, axis=1
@@ -2145,12 +2145,20 @@ elif analysis == "Time Analysis":
                         currency_cols += ['AvgPrice_A', 'AvgPrice_B', 'AvgPrice Δ']
                     show_df(display_df, currency_cols=currency_cols, percent_cols=['Revenue Δ%'])
 
+                only_both = st.checkbox(
+                    "Only compare items present in both periods",
+                    value=False,
+                    key="ta_only_both",
+                    help="Excludes customers/products/groups that were only active in Period A or only in Period B."
+                )
+                presence_label = "both periods" if only_both else "either period"
+
                 tab_cust, tab_prod, tab_group = st.tabs(["Per Customer", "Per Product", "Per Grouping"])
 
                 # ── Per customer ─────────────────────────────────────────────────
                 with tab_cust:
-                    cust_cmp = _ta_build_comparison(df_a, df_b, 'CustomerId')
-                    st.markdown(f"**{len(cust_cmp)} customers active in either period**")
+                    cust_cmp = _ta_build_comparison(df_a, df_b, 'CustomerId', only_both=only_both)
+                    st.markdown(f"**{len(cust_cmp)} customers active in {presence_label}**")
                     _ta_display_table(cust_cmp, show_avg_qty=True)
 
                     if not cust_cmp.empty:
@@ -2180,9 +2188,9 @@ elif analysis == "Time Analysis":
 
                 # ── Per product ──────────────────────────────────────────────────
                 with tab_prod:
-                    prod_cmp = _ta_build_comparison(df_a, df_b, 'ProductId')
+                    prod_cmp = _ta_build_comparison(df_a, df_b, 'ProductId', only_both=only_both)
                     prod_cmp = enrich_with_product_name(prod_cmp, fdf, id_col='ProductId')
-                    st.markdown(f"**{len(prod_cmp)} products sold in either period**")
+                    st.markdown(f"**{len(prod_cmp)} products sold in {presence_label}**")
                     _ta_display_table(prod_cmp, show_avg_qty=True, show_avg_price=True)
 
                 # ── Per grouping ─────────────────────────────────────────────────
@@ -2191,8 +2199,8 @@ elif analysis == "Time Analysis":
                         st.info("No categorical columns available for grouping.")
                     else:
                         group_col_choice = st.selectbox("Group by", cat_cols, key="ta_group_col")
-                        group_cmp = _ta_build_comparison(df_a, df_b, group_col_choice)
-                        st.markdown(f"**{len(group_cmp)} groups active in either period**")
+                        group_cmp = _ta_build_comparison(df_a, df_b, group_col_choice, only_both=only_both)
+                        st.markdown(f"**{len(group_cmp)} groups active in {presence_label}**")
                         _ta_display_table(group_cmp, show_avg_qty=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
