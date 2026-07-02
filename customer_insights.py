@@ -527,6 +527,14 @@ def get_sidebar_options(df):
 filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers = get_sidebar_options(df)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
+def _reset_filters():
+    """Clear all filter widget state so they re-render at their defaults
+    (full date range, no customer/category selections) on the next run."""
+    keys_to_clear = ["date_range_filter", "customer_filter"] + [f"filter_{c}" for c in filter_cat_cols]
+    for k in keys_to_clear:
+        if k in st.session_state:
+            del st.session_state[k]
+
 with st.sidebar:
     st.markdown("### Explorer Controls")
     st.markdown("---")
@@ -544,7 +552,11 @@ with st.sidebar:
     ])
 
     st.markdown("---")
-    st.markdown("**Filters**")
+    filt_header_col, filt_reset_col = st.columns([2, 1])
+    with filt_header_col:
+        st.markdown("**Filters**")
+    with filt_reset_col:
+        st.button("Reset", key="reset_filters_btn", on_click=_reset_filters, help="Clear all filters below")
 
     if min_date is not None:
         date_range = st.date_input(
@@ -552,11 +564,14 @@ with st.sidebar:
             value=(min_date, max_date),
             min_value=min_date,
             max_value=max_date,
+            key="date_range_filter",
         )
     else:
         date_range = None
 
-    selected_customers = st.multiselect("Customers", all_customers, placeholder="All customers")
+    selected_customers = st.multiselect(
+        "Customers", all_customers, placeholder="All customers", key="customer_filter"
+    )
 
     cat_filters = {}
     for col in filter_cat_cols:
