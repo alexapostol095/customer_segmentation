@@ -527,13 +527,14 @@ def get_sidebar_options(df):
 filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers = get_sidebar_options(df)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
+if 'filter_reset_counter' not in st.session_state:
+    st.session_state['filter_reset_counter'] = 0
+
 def _reset_filters():
-    """Clear all filter widget state so they re-render at their defaults
-    (full date range, no customer/category selections) on the next run."""
-    keys_to_clear = ["date_range_filter", "customer_filter"] + [f"filter_{c}" for c in filter_cat_cols]
-    for k in keys_to_clear:
-        if k in st.session_state:
-            del st.session_state[k]
+    """Bump the reset counter so every filter widget below gets a brand-new
+    key on the next run — Streamlit then renders them fresh instead of
+    reusing (and visually retaining) the old widget instance."""
+    st.session_state['filter_reset_counter'] += 1
 
 with st.sidebar:
     st.markdown("### Explorer Controls")
@@ -558,24 +559,26 @@ with st.sidebar:
     with filt_reset_col:
         st.button("Reset", key="reset_filters_btn", on_click=_reset_filters, help="Clear all filters below")
 
+    _rk = st.session_state['filter_reset_counter']  # suffix appended to filter widget keys
+
     if min_date is not None:
         date_range = st.date_input(
             "Date range",
             value=(min_date, max_date),
             min_value=min_date,
             max_value=max_date,
-            key="date_range_filter",
+            key=f"date_range_filter_{_rk}",
         )
     else:
         date_range = None
 
     selected_customers = st.multiselect(
-        "Customers", all_customers, placeholder="All customers", key="customer_filter"
+        "Customers", all_customers, placeholder="All customers", key=f"customer_filter_{_rk}"
     )
 
     cat_filters = {}
     for col in filter_cat_cols:
-        selected = st.multiselect(col, col_vals[col], placeholder=f"All {col}", key=f"filter_{col}")
+        selected = st.multiselect(col, col_vals[col], placeholder=f"All {col}", key=f"filter_{col}_{_rk}")
         cat_filters[col] = selected
 
     st.markdown("---")
