@@ -2117,13 +2117,16 @@ elif analysis == "Time Analysis":
                     merged['AvgQtyPerLine_A'] = (merged['Quantity_A'] / merged['Lines_A'].replace(0, np.nan)).fillna(0)
                     merged['AvgQtyPerLine_B'] = (merged['Quantity_B'] / merged['Lines_B'].replace(0, np.nan)).fillna(0)
                     merged['AvgQtyPerLine Δ'] = merged['AvgQtyPerLine_B'] - merged['AvgQtyPerLine_A']
+                    merged['AvgPrice_A'] = (merged['Revenue_A'] / merged['Quantity_A'].replace(0, np.nan)).fillna(0)
+                    merged['AvgPrice_B'] = (merged['Revenue_B'] / merged['Quantity_B'].replace(0, np.nan)).fillna(0)
+                    merged['AvgPrice Δ'] = merged['AvgPrice_B'] - merged['AvgPrice_A']
                     merged['AOV_A'] = (merged['Revenue_A'] / merged['Orders_A'].replace(0, np.nan)).fillna(0)
                     merged['AOV_B'] = (merged['Revenue_B'] / merged['Orders_B'].replace(0, np.nan)).fillna(0)
                     if has_cost:
                         merged['Margin Δ'] = merged['Margin_B'] - merged['Margin_A']
                     return merged.sort_values('Revenue Δ', ascending=False)
 
-                def _ta_display_table(cmp_df, show_avg_qty=False):
+                def _ta_display_table(cmp_df, show_avg_qty=False, show_avg_price=False):
                     # Values stay numeric (not formatted strings) so the dataframe
                     # widget sorts correctly on magnitude rather than alphabetically.
                     cols = [c for c in cmp_df.columns if c not in ('AOV_A', 'AOV_B')]
@@ -2132,10 +2135,14 @@ elif analysis == "Time Analysis":
                             c for c in cols
                             if c not in ('Lines_A', 'Lines_B', 'Lines Δ', 'AvgQtyPerLine_A', 'AvgQtyPerLine_B', 'AvgQtyPerLine Δ')
                         ]
+                    if not show_avg_price:
+                        cols = [c for c in cols if c not in ('AvgPrice_A', 'AvgPrice_B', 'AvgPrice Δ')]
                     display_df = cmp_df[cols]
                     currency_cols = ['Revenue_A', 'Revenue_B', 'Revenue Δ']
                     if has_cost:
                         currency_cols += ['Margin_A', 'Margin_B', 'Margin Δ']
+                    if show_avg_price:
+                        currency_cols += ['AvgPrice_A', 'AvgPrice_B', 'AvgPrice Δ']
                     show_df(display_df, currency_cols=currency_cols, percent_cols=['Revenue Δ%'])
 
                 tab_cust, tab_prod, tab_group = st.tabs(["Per Customer", "Per Product", "Per Grouping"])
@@ -2176,7 +2183,7 @@ elif analysis == "Time Analysis":
                     prod_cmp = _ta_build_comparison(df_a, df_b, 'ProductId')
                     prod_cmp = enrich_with_product_name(prod_cmp, fdf, id_col='ProductId')
                     st.markdown(f"**{len(prod_cmp)} products sold in either period**")
-                    _ta_display_table(prod_cmp, show_avg_qty=True)
+                    _ta_display_table(prod_cmp, show_avg_qty=True, show_avg_price=True)
 
                 # ── Per grouping ─────────────────────────────────────────────────
                 with tab_group:
