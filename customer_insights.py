@@ -951,6 +951,22 @@ elif analysis == "Basket Segmentation":
         "**Define baskets that represent customer archetypes, then automatically score and assign every customer to the basket they match best.**"
     )
 
+    # ── Basket definition mode (global — applies to every basket below) ─────
+    basket_mode_label = st.radio(
+        "Definition mode",
+        ["Basket — bought together in the same order", "Group of items — bought over time, any order"],
+        horizontal=True, key="bseg_basket_mode",
+        help=(
+            "Basket mode requires all products to appear together on the same invoice — "
+            "a true co-purchase bundle. Group of items mode is looser: a customer matches "
+            "if they've bought any of these products at any point, even across separate "
+            "orders — useful for archetypes defined by a category of goods rather than a "
+            "literal cart."
+        ),
+    )
+    is_group_mode = basket_mode_label.startswith("Group")
+    basket_mode = "group" if is_group_mode else "basket"
+
     # ── Session state init ─────────────────────────────────────────────────
     if 'defined_baskets' not in st.session_state:
         st.session_state['defined_baskets'] = {}  # {basket_name: [product_ids]}
@@ -1010,22 +1026,38 @@ elif analysis == "Basket Segmentation":
 
     # ── Helper: basket info (cached) ───────────────────────────────────────
     @st.cache_data(show_spinner=False)
-    def basket_info_cached(product_tuple, df, _fp):
-        """Return key stats — revenue/margin from invoices where ALL products appear together."""
+    def basket_info_cached(product_tuple, df, mode, _fp):
+        """Return key stats for a basket/group.
+
+        mode == 'basket': strict co-purchase — all products must appear
+        together on the same invoice (original behaviour).
+        mode == 'group':  loose category affinity — any line matching any
+        of the products counts, regardless of invoice or timing.
+        """
         prods = set(str(p) for p in product_tuple)
         if not prods:
             return None
 
-        # Build inverted index once: product -> set of invoices
         sub = df[df['ProductId'].astype(str).isin(prods)]
+        customers_any = sub['CustomerId'].nunique()
+
+        if mode == 'group':
+            if sub.empty:
+                return {'customers_all': 0, 'customers_any': 0, 'invoice_count': 0,
+                        'total_rev': 0, 'total_mar': None}
+            total_rev = sub['LineRevenue'].sum()
+            total_mar = sub['LineMargin'].sum() if 'LineMargin' in sub.columns else None
+            return {'customers_all': customers_any, 'customers_any': customers_any,
+                    'invoice_count': sub['InvoiceId'].nunique(),
+                    'total_rev': total_rev, 'total_mar': total_mar}
+
+        # ── Basket (strict) mode — original co-occurrence logic ────────────
         prod_to_inv = sub.groupby('ProductId')['InvoiceId'].apply(set).to_dict()
         invoice_sets = list(prod_to_inv.values())
         basket_invoices = set.intersection(*invoice_sets) if invoice_sets else set()
 
-        customers_any = sub['CustomerId'].nunique()
-
         if not basket_invoices:
-            return {'customers_all': 0, 'customers_any': customers_any,
+            return {'customers_all': 0, 'customers_any': customers_any, 'invoice_count': 0,
                     'total_rev': 0, 'total_mar': None}
 
         basket_lines = df[
@@ -1037,10 +1069,25 @@ elif analysis == "Basket Segmentation":
         total_mar = basket_lines['LineMargin'].sum() if 'LineMargin' in basket_lines.columns else None
 
         return {'customers_all': customers_all, 'customers_any': customers_any,
+                'invoice_count': len(basket_invoices),
                 'total_rev': total_rev, 'total_mar': total_mar}
 
     def basket_info(product_list, df):
-        return basket_info_cached(tuple(sorted(str(p) for p in product_list)), df, _bc_fp)
+        return basket_info_cached(tuple(sorted(str(p) for p in product_list)), df, basket_mode, _bc_fp)
+
+    def render_basket_metrics(info):
+        """Draw the 4 metric cards, labelled according to the active mode."""
+        c1, c2, c3, c4 = st.columns(4)
+        if is_group_mode:
+            with c1: metric_card("Group Customers", str(info["customers_any"]))
+            with c2: metric_card("Orders Touching Group", str(info["invoice_count"]))
+            with c3: metric_card("Group Revenue", fmt_currency(info["total_rev"]))
+            with c4: metric_card("Group Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
+        else:
+            with c1: metric_card("Basket Customers", str(info["customers_all"]))
+            with c2: metric_card("Buy Any Product", str(info["customers_any"]))
+            with c3: metric_card("Basket Revenue", fmt_currency(info["total_rev"]))
+            with c4: metric_card("Basket Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
 
     # ── Auto-suggest baskets from co-occurrence ────────────────────────────
     st.markdown('<div class="section-header" style="font-size:1.1rem">Step 1 — Auto-suggested Baskets</div>', unsafe_allow_html=True)
@@ -1123,11 +1170,7 @@ elif analysis == "Basket Segmentation":
             info = basket_info(sug['products'], bc_df)
             with st.expander(f"{sug['name']} — {len(sug['products'])} products", expanded=False):
                 if info:
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1: metric_card("Basket Customers", str(info["customers_all"]))
-                    with c2: metric_card("Buy Any Product", str(info["customers_any"]))
-                    with c3: metric_card("Basket Revenue", fmt_currency(info["total_rev"]))
-                    with c4: metric_card("Basket Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
+                    render_basket_metrics(info)
                 st.markdown(f"**Products:** {', '.join(sug['products'])}")
                 if st.button(f"Load into editor", key=f"load_sug_{i}"):
                     st.session_state['_basket_name_val'] = sug['name']
@@ -1162,11 +1205,7 @@ elif analysis == "Basket Segmentation":
         info = basket_info(basket_products, bc_df)
         if info:
             st.markdown("**Current basket stats**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: metric_card("Basket Customers", str(info["customers_all"]))
-            with c2: metric_card("Buy Any Product", str(info["customers_any"]))
-            with c3: metric_card("Basket Revenue", fmt_currency(info["total_rev"]))
-            with c4: metric_card("Basket Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
+            render_basket_metrics(info)
 
     col_b1, col_b2, col_b3 = st.columns([1, 1, 2])
     with col_b1:
@@ -1187,11 +1226,7 @@ elif analysis == "Basket Segmentation":
             with st.expander(f"{bname} — {len(bprods)} products", expanded=False):
                 info = basket_info(bprods, bc_df)
                 if info:
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1: metric_card("Basket Customers", str(info["customers_all"]))
-                    with c2: metric_card("Buy Any Product", str(info["customers_any"]))
-                    with c3: metric_card("Basket Revenue", fmt_currency(info["total_rev"]))
-                    with c4: metric_card("Basket Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
+                    render_basket_metrics(info)
                 st.markdown(f"**Products:** {', '.join(bprods)}")
                 if st.button("Remove", key=f"remove_basket_{bname}"):
                     del st.session_state['defined_baskets'][bname]
@@ -1202,37 +1237,68 @@ elif analysis == "Basket Segmentation":
     # ── Customer assignment ────────────────────────────────────────────────
     st.markdown("---")
     st.markdown('<div class="section-header" style="font-size:1.1rem">Step 3 — Assign Customers</div>', unsafe_allow_html=True)
+    st.caption(
+        f"Definition mode: **{basket_mode_label}**. "
+        + ("Thresholds below apply to any invoice touching any of a basket's products, anywhere in a customer's history."
+           if is_group_mode else
+           "Thresholds below apply only to invoices where the full basket appears together.")
+    )
 
     assign_metric = st.selectbox(
         "Assign customers based on",
         ["Invoice Count", "Revenue", "Revenue Share of Customer Spend"],
         key="bseg_assign_metric",
         help=(
-            "Invoice Count — how many invoices contain the full basket together. "
-            "Revenue — total revenue from those invoices. "
-            "Revenue Share of Customer Spend — what share of a customer's overall spend "
-            "comes from the full basket, which surfaces customers defined by a basket "
-            "even if they're not big spenders overall."
+            ("Invoice Count — how many invoices touch any of the group's products. "
+             "Revenue — total revenue from lines matching those products, anywhere in the customer's history. "
+             "Revenue Share of Customer Spend — what share of a customer's overall spend "
+             "comes from this group's products, which surfaces customers defined by the "
+             "group even if they're not big spenders overall.")
+            if is_group_mode else
+            ("Invoice Count — how many invoices contain the full basket together. "
+             "Revenue — total revenue from those invoices. "
+             "Revenue Share of Customer Spend — what share of a customer's overall spend "
+             "comes from the full basket, which surfaces customers defined by a basket "
+             "even if they're not big spenders overall.")
         )
     )
 
     if assign_metric == "Invoice Count":
         assign_threshold = st.slider(
-            "Min invoices containing the full basket to be assigned",
+            "Min invoices containing the full basket to be assigned" if not is_group_mode
+            else "Min invoices touching any group product to be assigned",
             1, 20, 3,
-            help="Counts only invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled No Segmentation."
+            help=(
+                "Counts any invoice touching any of the group's products. Customers below this "
+                "threshold for every group are labelled No Segmentation."
+                if is_group_mode else
+                "Counts only invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled No Segmentation."
+            )
         )
     elif assign_metric == "Revenue":
         assign_threshold = st.number_input(
-            "Min revenue from the full basket to be assigned (€)",
+            "Min revenue from the full basket to be assigned (€)" if not is_group_mode
+            else "Min revenue from the group's products to be assigned (€)",
             min_value=0.0, value=100.0, step=25.0,
-            help="Total revenue from invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled No Segmentation."
+            help=(
+                "Total revenue from lines matching any of the group's products, anywhere in the "
+                "customer's history. Customers below this threshold for every group are labelled No Segmentation."
+                if is_group_mode else
+                "Total revenue from invoices where ALL basket products appear together. Customers below this threshold for every basket are labelled No Segmentation."
+            )
         )
     else:
         assign_threshold = st.slider(
-            "Min % of a customer's total spend that must come from the full basket",
+            "Min % of a customer's total spend that must come from the full basket" if not is_group_mode
+            else "Min % of a customer's total spend that must come from the group's products",
             0, 100, 10,
-            help="Share of the customer's overall spend that comes from invoices containing the full basket. Customers below this threshold for every basket are labelled No Segmentation."
+            help=(
+                "Share of the customer's overall spend that comes from any of the group's "
+                "products, anywhere in their history. Customers below this threshold for every "
+                "group are labelled No Segmentation."
+                if is_group_mode else
+                "Share of the customer's overall spend that comes from invoices containing the full basket. Customers below this threshold for every basket are labelled No Segmentation."
+            )
         )
 
     if not st.session_state['defined_baskets']:
@@ -1244,23 +1310,33 @@ elif analysis == "Basket Segmentation":
             all_custs = fdf['CustomerId'].unique()
             cust_total_spend = fdf.groupby('CustomerId')['LineRevenue'].sum()
 
-            # For each basket, compute invoice count, revenue, and revenue share
-            # from invoices where the customer bought ALL basket products together
+            # For each basket, compute invoice count, revenue, and revenue share.
+            # In "basket" mode this requires ALL basket products together on the
+            # same invoice (and, matching the original behaviour, revenue is the
+            # full invoice's revenue). In "group" mode it's a loose category
+            # match — any invoice touching any of the group's products counts,
+            # and revenue/share are based only on lines for those products.
             invoice_counts, revenue_stats, share_pct_stats = {}, {}, {}
             for bname, bprods in baskets.items():
                 bprods_set = set(str(p) for p in bprods)
 
-                # Get invoices that contain ALL basket products
-                inv_prod = (
-                    fdf[fdf['ProductId'].astype(str).isin(bprods_set)]
-                    .groupby('InvoiceId')['ProductId']
-                    .apply(lambda x: set(x.astype(str)))
-                )
-                full_basket_invoices = inv_prod[inv_prod.apply(lambda x: bprods_set.issubset(x))].index
-                basket_lines = fdf[fdf['InvoiceId'].isin(full_basket_invoices)]
+                if is_group_mode:
+                    sub = fdf[fdf['ProductId'].astype(str).isin(bprods_set)]
+                    inv_count = sub.groupby('CustomerId')['InvoiceId'].nunique().rename(bname)
+                    revenue   = sub.groupby('CustomerId')['LineRevenue'].sum().rename(bname)
+                else:
+                    # Get invoices that contain ALL basket products
+                    inv_prod = (
+                        fdf[fdf['ProductId'].astype(str).isin(bprods_set)]
+                        .groupby('InvoiceId')['ProductId']
+                        .apply(lambda x: set(x.astype(str)))
+                    )
+                    full_basket_invoices = inv_prod[inv_prod.apply(lambda x: bprods_set.issubset(x))].index
+                    basket_lines = fdf[fdf['InvoiceId'].isin(full_basket_invoices)]
 
-                inv_count = basket_lines.groupby('CustomerId')['InvoiceId'].nunique().rename(bname)
-                revenue   = basket_lines.groupby('CustomerId')['LineRevenue'].sum().rename(bname)
+                    inv_count = basket_lines.groupby('CustomerId')['InvoiceId'].nunique().rename(bname)
+                    revenue   = basket_lines.groupby('CustomerId')['LineRevenue'].sum().rename(bname)
+
                 share_pct = (revenue / cust_total_spend.reindex(revenue.index) * 100).fillna(0).rename(bname)
 
                 invoice_counts[bname] = inv_count
@@ -1307,6 +1383,7 @@ elif analysis == "Basket Segmentation":
             st.session_state['basket_assignment'] = assignment_df
             st.session_state['basket_assignment_metric'] = assign_metric
             st.session_state['basket_assignment_threshold'] = assign_threshold
+            st.session_state['basket_assignment_mode'] = basket_mode_label
 
     # ── Show assignment results ────────────────────────────────────────────
     if 'basket_assignment' in st.session_state:
@@ -1336,13 +1413,15 @@ elif analysis == "Basket Segmentation":
 
         assign_metric_used = st.session_state.get('basket_assignment_metric', 'Invoice Count')
         assign_threshold_used = st.session_state.get('basket_assignment_threshold')
+        assign_mode_used = st.session_state.get('basket_assignment_mode', basket_mode_label)
         # Derive basket names from whatever's actually in the stored table, so this
         # still works if baskets were redefined after the assignment last ran
         basket_names_disp = [c[len('Invoices_'):] for c in assignment_df.columns if c.startswith('Invoices_')]
 
         st.markdown("**Full customer assignment table**")
         st.caption(
-            f"Assigned on **{assign_metric_used}** (threshold: {assign_threshold_used}). "
+            f"Assigned on **{assign_metric_used}** (threshold: {assign_threshold_used}), "
+            f"definition mode: **{assign_mode_used}**. "
             "AssignmentStat is the value of that statistic for the customer's assigned basket."
         )
         table_currency_cols = [f'Revenue_{b}' for b in basket_names_disp]
@@ -1456,7 +1535,7 @@ elif analysis == "Basket Exploration":
     st.caption(f"Using top {top_pct_prods}% → {n_prods_keep:,} of {len(prod_inv_counts):,} products")
 
     @st.cache_data(show_spinner=False)
-    def compute_basket_exploration(df, size, n_results, _fp=''):
+    def compute_basket_exploration(df, size, n_results, pool_multiplier=3, _fp=''):
         from collections import Counter
         has_cost = 'TotalCostPerUnit' in df.columns
         if has_cost:
@@ -1479,7 +1558,7 @@ elif analysis == "Basket Exploration":
         if not combo_counter:
             return pd.DataFrame()
 
-        top_combos = combo_counter.most_common(n_results * 3)
+        top_combos = combo_counter.most_common(n_results * pool_multiplier)
 
         # ── One-time precomputation, reused for every candidate combo ──────────
         df = df.assign(_p=df['ProductId'].astype(str))
@@ -1546,7 +1625,7 @@ elif analysis == "Basket Exploration":
         return pd.DataFrame(rows)
 
     with st.spinner("Computing basket exploration..."):
-        exp_df = compute_basket_exploration(exp_input_df, basket_size, top_n_exp, _fdf_fp)
+        exp_df = compute_basket_exploration(exp_input_df, basket_size, top_n_exp, 3, _fdf_fp)
 
     if exp_df.empty:
         st.info("Not enough data for this basket size. Try reducing the basket size or expanding the product universe.")
