@@ -493,10 +493,10 @@ if uploaded is None:
 
 # ── Load ───────────────────────────────────────────────────────────────────────
 with st.spinner("Loading data…"):
-    df = load_and_prepare(uploaded)
+    df_raw = load_and_prepare(uploaded)
 
 with st.spinner("Computing metrics…"):
-    rfm, prod_repeat = compute_base(df, f"{len(df)}_{df['LineRevenue'].sum():.2f}")
+    rfm, prod_repeat = compute_base(df_raw, f"{len(df_raw)}_{df_raw['LineRevenue'].sum():.2f}")
 
 # ── Cached sidebar helpers (run once, not on every click) ─────────────────────
 @st.cache_data(show_spinner=False)
@@ -524,7 +524,50 @@ def get_sidebar_options(df):
     n_customers = df['CustomerId'].nunique()
     return filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers
 
-filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers = get_sidebar_options(df)
+filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers = get_sidebar_options(df_raw)
+
+# ── Product aggregation (roll rows up to a chosen column, in place of ProductId) ─
+@st.cache_data(show_spinner=False)
+def aggregate_by_column(df_in, group_col):
+    """
+    Re-express order lines so that `group_col` acts as ProductId everywhere.
+    Rows are aggregated to (InvoiceId, group_col); Quantity/Revenue/Cost are
+    summed and per-unit prices are recomputed from those totals (weighted
+    average), the same rollup logic used for the SubGroup case. Any other
+    column is carried through with its first value per group, so it's only
+    meaningful for attributes that are constant within the group (e.g. a
+    parent category). Name/Description are dropped since they no longer
+    identify a single product once rows are aggregated.
+    """
+    d = df_in.copy()
+    has_cost = 'TotalCostPerUnit' in d.columns
+
+    if 'LineRevenue' not in d.columns:
+        d['LineRevenue'] = d['PricePerUnit'] * d['Quantity']
+    if has_cost:
+        d['LineCost'] = d['TotalCostPerUnit'] * d['Quantity']
+
+    agg_dict = {'Quantity': 'sum', 'LineRevenue': 'sum'}
+    if has_cost:
+        agg_dict['LineCost'] = 'sum'
+
+    skip = {
+        'InvoiceId', group_col, 'ProductId', 'Quantity', 'LineRevenue', 'LineCost',
+        'PricePerUnit', 'TotalCostPerUnit', 'Name', 'Description',
+    }
+    for c in d.columns:
+        if c not in skip and c not in agg_dict:
+            agg_dict[c] = 'first'
+
+    grouped = d.groupby(['InvoiceId', group_col], as_index=False).agg(agg_dict)
+
+    grouped['ProductId'] = grouped[group_col].astype(str)
+    grouped['PricePerUnit'] = grouped['LineRevenue'] / grouped['Quantity']
+    if has_cost:
+        grouped['TotalCostPerUnit'] = grouped['LineCost'] / grouped['Quantity']
+        grouped = grouped.drop(columns=['LineCost'])
+
+    return grouped
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 if 'filter_reset_counter' not in st.session_state:
@@ -551,6 +594,20 @@ with st.sidebar:
         "KVI Classification",
         "Pricing Simulation",
     ])
+
+    st.markdown("---")
+    st.markdown("**Product Grouping**")
+    agg_choices = ["— Off (use ProductId) —"] + filter_cat_cols
+    agg_col_choice = st.selectbox(
+        "Aggregate rows by", agg_choices, index=0, key="agg_col_choice",
+        help=(
+            "Roll order lines up to this column and treat it as ProductId "
+            "everywhere in the app (e.g. SubGroup). KVI Classification and "
+            "Pricing Simulation always use the real ProductId regardless of "
+            "this setting, since KVI logic only makes sense at true product "
+            "granularity."
+        ),
+    )
 
     st.markdown("---")
     filt_header_col, filt_reset_col = st.columns([2, 1])
@@ -584,6 +641,12 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{n_rows:,} rows · {n_customers:,} customers</span>", unsafe_allow_html=True)
 
+# ── Apply product aggregation choice ────────────────────────────────────────────
+if agg_col_choice != "— Off (use ProductId) —":
+    df = aggregate_by_column(df_raw, agg_col_choice)
+else:
+    df = df_raw
+
 # ── Apply filters ──────────────────────────────────────────────────────────────
 cat_filters_tuple = tuple((k, tuple(v)) for k, v in cat_filters.items() if v)
 _date_key = tuple(date_range) if date_range and len(date_range) == 2 else None
@@ -605,6 +668,11 @@ def apply_filters(df, date_range, selected_customers, cat_filters_tuple, seg_key
 
 fdf = apply_filters(df, _date_key, _cust_key, cat_filters_tuple, _seg_key)
 
+# fdf_raw mirrors fdf but is always at true-ProductId granularity, regardless
+# of the sidebar aggregation choice — used by KVI Classification and Pricing
+# Simulation, which must never run on aggregated/synthetic ProductIds.
+fdf_raw = apply_filters(df_raw, _date_key, _cust_key, cat_filters_tuple, _seg_key)
+
 # Merge confirmed specialty labels — cached via a separate function so the
 # 92ms merge doesn't run on every click
 @st.cache_data(show_spinner=False)
@@ -625,6 +693,12 @@ if 'confirmed_specialty' in st.session_state:
         st.session_state['confirmed_specialty']['labels'],
         _seg_key
     )
+    fdf_raw = merge_labels(
+        fdf_raw,
+        st.session_state['confirmed_specialty']['labels'],
+        _seg_key
+    )
+
 
 @st.cache_data(show_spinner=False)
 def get_cat_cols(df, _fp=''):
@@ -2232,6 +2306,11 @@ elif analysis == "KVI Classification":
         "customer breadth, and basket co-occurrence."
         "</p>", unsafe_allow_html=True
     )
+    if agg_col_choice != "— Off (use ProductId) —":
+        st.caption(
+            f"Note: the sidebar is set to aggregate by **{agg_col_choice}**, but KVI "
+            "Classification always runs on the true ProductId."
+        )
 
     # Controls
     col_c1, col_c2 = st.columns(2)
@@ -2282,7 +2361,7 @@ elif analysis == "KVI Classification":
 
     elif seg_source == "Custom group":
         group_col_kvi = st.selectbox("Group column", cat_cols, key="kvi_group_col")
-        group_vals = sorted(fdf[group_col_kvi].dropna().astype(str).unique().tolist())
+        group_vals = sorted(fdf_raw[group_col_kvi].dropna().astype(str).unique().tolist())
         selected_group_val = st.selectbox("Select group", group_vals, key="kvi_group_val")
 
     with st.spinner("Running KVI classification..."):
@@ -2293,16 +2372,16 @@ elif analysis == "KVI Classification":
             group_customers = confirmed_labels[
                 confirmed_labels['Customer Cluster'] == selected_group_val
             ]['CustomerId'].unique()
-            kvi_input = fdf[fdf['CustomerId'].isin(group_customers)]
+            kvi_input = fdf_raw[fdf_raw['CustomerId'].isin(group_customers)]
             scope_label = f"Specialty = {selected_group_val}"
 
         elif seg_source == "Custom group" and group_col_kvi and selected_group_val:
-            group_customers = fdf[fdf[group_col_kvi].astype(str) == selected_group_val]['CustomerId'].unique()
-            kvi_input = fdf[fdf['CustomerId'].isin(group_customers)]
+            group_customers = fdf_raw[fdf_raw[group_col_kvi].astype(str) == selected_group_val]['CustomerId'].unique()
+            kvi_input = fdf_raw[fdf_raw['CustomerId'].isin(group_customers)]
             scope_label = f"{group_col_kvi} = {selected_group_val}"
 
         else:
-            kvi_input = fdf
+            kvi_input = fdf_raw
             scope_label = "All customers"
 
         if len(kvi_input) == 0:
@@ -2340,7 +2419,7 @@ elif analysis == "KVI Classification":
                 sub[['ProductId', 'Quantity', 'Price', 'Revenue', 'UniqueCustomers',
                      'PurchaseCount', 'Demand_Proportion', 'Revenue_Proportion',
                      'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
-                fdf
+                fdf_raw
             ),
             currency_cols=['Price', 'Revenue']
         )
@@ -2400,7 +2479,7 @@ elif analysis == "KVI Classification":
                   'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']] = \
             score_df[['Demand_Proportion_Scaled', 'Revenue_Proportion_Scaled',
                       'UniqueCustomers_Proportion_Scaled', 'Corr_Score_Scaled']].round(3)
-        show_df(enrich_with_product_name(score_df, fdf))
+        show_df(enrich_with_product_name(score_df, fdf_raw))
 
     # ── Export ─────────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -2430,7 +2509,7 @@ elif analysis == "KVI Classification":
                         group_customers = confirmed_labels[
                             confirmed_labels['Customer Cluster'] == group
                         ]['CustomerId'].unique()
-                        group_input = fdf[fdf['CustomerId'].isin(group_customers)]
+                        group_input = fdf_raw[fdf_raw['CustomerId'].isin(group_customers)]
                         if len(group_input) == 0:
                             continue
                         try:
@@ -2486,6 +2565,11 @@ elif analysis == "Pricing Simulation":
         "and margin against the baseline for a selected time period."
         "</p>", unsafe_allow_html=True
     )
+    if agg_col_choice != "— Off (use ProductId) —":
+        st.caption(
+            f"Note: the sidebar is set to aggregate by **{agg_col_choice}**, but Pricing "
+            "Simulation always runs on the true ProductId."
+        )
 
     # ── Setup ──────────────────────────────────────────────────────────────────
     col_s1, col_s2, col_s3 = st.columns(3)
@@ -2510,9 +2594,9 @@ elif analysis == "Pricing Simulation":
 )
     with col_s3:
         # Date range for baseline
-        if 'CreatedDate' in fdf.columns:
-            min_d = fdf['CreatedDate'].min().date()
-            max_d = fdf['CreatedDate'].max().date()
+        if 'CreatedDate' in fdf_raw.columns:
+            min_d = fdf_raw['CreatedDate'].min().date()
+            max_d = fdf_raw['CreatedDate'].max().date()
             sim_dates = st.date_input(
                 "Simulation period",
                 value=(min_d, max_d),
@@ -2527,9 +2611,9 @@ elif analysis == "Pricing Simulation":
     if sim_dates and len(sim_dates) == 2:
         sim_start = pd.Timestamp(sim_dates[0])
         sim_end   = pd.Timestamp(sim_dates[1])
-        sim_df    = fdf[(fdf['CreatedDate'] >= sim_start) & (fdf['CreatedDate'] <= sim_end)].copy()
+        sim_df    = fdf_raw[(fdf_raw['CreatedDate'] >= sim_start) & (fdf_raw['CreatedDate'] <= sim_end)].copy()
     else:
-        sim_df = fdf.copy()
+        sim_df = fdf_raw.copy()
 
     # ── Check required cost column ─────────────────────────────────────────────
     if 'TotalCostPerUnit' not in sim_df.columns:
