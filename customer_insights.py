@@ -1426,13 +1426,16 @@ elif analysis == "Basket Exploration":
     st.markdown("**Explore the most common product combinations in the data, with revenue and customer metrics.**")
 
     # ── Controls ──────────────────────────────────────────────────────────
-    col_c1, col_c2, col_c3 = st.columns(3)
+    col_c1, col_c2, col_c3, col_c4 = st.columns(4)
     with col_c1:
         top_n_exp = st.slider("Top N baskets to show", 5, 50, 15, key="exp_top_n")
     with col_c2:
         no_overlap = st.toggle("No overlapping products", value=False, key="exp_no_overlap",
                                help="Each product can only appear in one basket")
     with col_c3:
+        no_overlap_customers = st.toggle("No overlapping customers", value=False, key="exp_no_overlap_customers",
+                               help="Each customer can only be counted towards one basket")
+    with col_c4:
         top_pct_prods = st.slider(
             "Top % products by invoice frequency", 10, 100, 50, 10,
             format="%d%%", key="exp_top_pct_prods",
@@ -1509,6 +1512,7 @@ elif analysis == "Basket Exploration":
                 rows.append({
                     'Combo': combo, 'Products': ' + '.join(str(p) for p in combo),
                     'InvoiceCount': inv_count, 'CustomerCount': 0,
+                    'CustomerSet': frozenset(),
                     'BasketRevenue': 0, 'BasketMargin': 0 if has_cost else None,
                     'AvgRevenuePerInvoice': 0,
                 })
@@ -1524,7 +1528,8 @@ elif analysis == "Basket Exploration":
             revenue = rev_slice.sum()
             margin = mar_by_invprod.reindex(idx).dropna().sum() if has_cost else None
 
-            cust_count = inv_to_cust.reindex(basket_inv_list).nunique()
+            basket_customers = frozenset(inv_to_cust.reindex(basket_inv_list).dropna().unique())
+            cust_count = len(basket_customers)
             avg_rev = revenue / len(basket_inv) if len(basket_inv) > 0 else 0
 
             rows.append({
@@ -1532,6 +1537,7 @@ elif analysis == "Basket Exploration":
                 'Products':           ' + '.join(str(p) for p in combo),
                 'InvoiceCount':       inv_count,
                 'CustomerCount':      cust_count,
+                'CustomerSet':        basket_customers,
                 'BasketRevenue':      round(revenue, 0),
                 'BasketMargin':       round(margin, 0) if margin is not None else None,
                 'AvgRevenuePerInvoice': round(avg_rev, 0),
@@ -1545,22 +1551,36 @@ elif analysis == "Basket Exploration":
     if exp_df.empty:
         st.info("Not enough data for this basket size. Try reducing the basket size or expanding the product universe.")
     else:
-        # Apply no-overlap filter
-        if no_overlap:
-            used = set()
+        # Apply no-overlap filter(s)
+        if no_overlap or no_overlap_customers:
+            used_products = set()
+            used_customers = set()
             keep = []
             for _, row in exp_df.iterrows():
                 combo_set = set(row['Combo'])
-                if not combo_set & used:
+                cust_set = row['CustomerSet']
+                product_conflict = no_overlap and bool(combo_set & used_products)
+                customer_conflict = no_overlap_customers and bool(cust_set & used_customers)
+                if not product_conflict and not customer_conflict:
                     keep.append(True)
-                    used.update(combo_set)
+                    if no_overlap:
+                        used_products.update(combo_set)
+                    if no_overlap_customers:
+                        used_customers.update(cust_set)
                 else:
                     keep.append(False)
             exp_df = exp_df[keep].head(top_n_exp)
         else:
             exp_df = exp_df.head(top_n_exp)
 
-        display_df = exp_df.drop(columns=['Combo']).copy()
+        display_df = exp_df.drop(columns=['Combo', 'CustomerSet']).copy()
+
+        _overlap_bits = []
+        if no_overlap:
+            _overlap_bits.append("no product overlap")
+        if no_overlap_customers:
+            _overlap_bits.append("no customer overlap")
+        overlap_suffix = f" ({', '.join(_overlap_bits)})" if _overlap_bits else ""
         if 'BasketMargin' in display_df.columns and display_df['BasketMargin'].isna().all():
             display_df = display_df.drop(columns=['BasketMargin'])
 
@@ -1680,7 +1700,7 @@ elif analysis == "Basket Exploration":
                 zerolinecolor='#2e3246',
             ),
             title=dict(
-                text=f"Top {len(exp_df)} baskets of size {basket_size}" + (" (no overlap)" if no_overlap else ""),
+                text=f"Top {len(exp_df)} baskets of size {basket_size}" + overlap_suffix,
                 font=dict(size=13, color='#f0ece3'),
             ),
             hoverlabel=dict(
