@@ -989,16 +989,10 @@ elif analysis == "Repeat Purchases":
                     "landed on the same calendar day, so there's no rhythm to plot against."
                 )
 
-            col_g1, col_g2, col_g3 = st.columns([1, 1, 2])
+            col_g1, col_g2 = st.columns([1, 2])
             with col_g1:
-                use_log_scale = st.checkbox(
-                    "Log scale", value=True, key="churn_log_scale",
-                    help="Day gaps and recency usually span a wide range — log scale keeps a few "
-                         "long-quiet outliers from squashing everyone else into a corner."
-                )
-            with col_g2:
                 show_flat_guide = st.checkbox("Show flat-days guide line", value=False, key="churn_show_flat_guide")
-            with col_g3:
+            with col_g2:
                 flat_guide_days = st.slider(
                     "Guide line at (days quiet)", 10, 365, 60, key="churn_flat_guide_days",
                     disabled=not show_flat_guide,
@@ -1009,10 +1003,7 @@ elif analysis == "Repeat Purchases":
 
             max_gap = plot_df['AvgGapDays'].max()
             max_rec = plot_df['Recency'].max()
-            axis_max = max(max_gap, max_rec, flat_guide_days if show_flat_guide else 0) * 1.15
-            # Log axes can't include 0 — anchor the low end just under the
-            # smallest real value instead of at the origin.
-            axis_min = max(0.5, min(plot_df['AvgGapDays'].min(), plot_df['Recency'].min()) * 0.7) if use_log_scale else 0
+            axis_max = max(max_gap, max_rec, flat_guide_days if show_flat_guide else 0) * 1.05
 
             max_spend = plot_df['TotalSpend'].max()
             plot_df['BubbleSize'] = ((plot_df['TotalSpend'] / max_spend * 40) + 6) if max_spend else 10
@@ -1021,7 +1012,7 @@ elif analysis == "Repeat Purchases":
 
             # Reference diagonal — "on pace" (Recency == their own normal gap)
             fig.add_trace(go.Scatter(
-                x=[axis_min, axis_max], y=[axis_min, axis_max], mode='lines',
+                x=[0, axis_max], y=[0, axis_max], mode='lines',
                 line=dict(color='#7a8099', width=1.5, dash='dash'),
                 hoverinfo='skip', showlegend=False,
             ))
@@ -1032,12 +1023,12 @@ elif analysis == "Repeat Purchases":
 
             if show_flat_guide:
                 fig.add_trace(go.Scatter(
-                    x=[axis_min, axis_max], y=[flat_guide_days, flat_guide_days], mode='lines',
+                    x=[0, axis_max], y=[flat_guide_days, flat_guide_days], mode='lines',
                     line=dict(color='#e07a5f', width=1.5, dash='dot'),
                     hoverinfo='skip', showlegend=False,
                 ))
                 fig.add_annotation(
-                    x=axis_min, y=flat_guide_days, text=f"{flat_guide_days}d quiet",
+                    x=axis_max * 0.02, y=flat_guide_days, text=f"{flat_guide_days}d quiet",
                     showarrow=False, font=dict(color='#e07a5f', size=10),
                     xanchor='left', yanchor='bottom'
                 )
@@ -1066,46 +1057,34 @@ elif analysis == "Repeat Purchases":
                 ),
             ))
 
-            xaxis_conf = dict(title="Their normal order interval (days)", gridcolor='#2e3246', zerolinecolor='#2e3246')
-            yaxis_conf = dict(title="Days since last order", gridcolor='#2e3246', zerolinecolor='#2e3246')
-            if use_log_scale:
-                xaxis_conf.update(type='log', range=[np.log10(axis_min), np.log10(axis_max)])
-                yaxis_conf.update(type='log', range=[np.log10(axis_min), np.log10(axis_max)])
-            else:
-                xaxis_conf['range'] = [0, axis_max]
-                yaxis_conf['range'] = [0, axis_max]
-
             fig.update_layout(
                 paper_bgcolor='#151720',
                 plot_bgcolor='#151720',
                 font=dict(color='#d4cfc7', size=11),
-                xaxis=xaxis_conf,
-                yaxis=yaxis_conf,
+                xaxis=dict(title="Their normal order interval (days)", gridcolor='#2e3246', zerolinecolor='#2e3246', range=[0, axis_max]),
+                yaxis=dict(title="Days since last order", gridcolor='#2e3246', zerolinecolor='#2e3246', range=[0, axis_max]),
                 title=dict(text="Recency vs. normal buying rhythm — select a region to explore", font=dict(size=13, color='#f0ece3')),
                 hoverlabel=dict(bgcolor='#1c1f2b', bordercolor='#e8c97e', font=dict(color='#f0ece3', size=12)),
                 dragmode='lasso',
-                width=680,
-                height=520,
-                margin=dict(l=60, r=20, t=60, b=60),
+                height=560,
+                margin=dict(l=60, r=60, t=60, b=60),
                 showlegend=False,
             )
 
             selected_ids = []
-            chart_col, _spacer_col = st.columns([2, 1])
-            with chart_col:
-                try:
-                    event = st.plotly_chart(
-                        fig, on_select="rerun",
-                        selection_mode=["points", "box", "lasso"],
-                        key="churn_scatter_select",
-                    )
-                    pts = (event or {}).get('selection', {}).get('points', [])
-                    selected_ids = [p['customdata'][0] for p in pts if 'customdata' in p]
-                except TypeError:
-                    # Older Streamlit without on_select support — chart is still
-                    # viewable, selection just isn't available.
-                    st.plotly_chart(fig)
-                    st.caption("Point selection needs a newer Streamlit version — browse the table below instead.")
+            try:
+                event = st.plotly_chart(
+                    fig, width='stretch', on_select="rerun",
+                    selection_mode=["points", "box", "lasso"],
+                    key="churn_scatter_select",
+                )
+                pts = (event or {}).get('selection', {}).get('points', [])
+                selected_ids = [p['customdata'][0] for p in pts if 'customdata' in p]
+            except TypeError:
+                # Older Streamlit without on_select support — chart is still
+                # viewable, selection just isn't available.
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Point selection needs a newer Streamlit version — browse the table below instead.")
 
             st.markdown("")
             if selected_ids:
