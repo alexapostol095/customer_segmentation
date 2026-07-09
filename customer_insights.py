@@ -941,7 +941,6 @@ elif analysis == "Repeat Purchases":
     with tab4:
         min_orders_regular = st.slider(
             "Min historical orders to qualify as a 'regular'",
-            "Min historical orders to qualify as a 'regular'",
             2, 20, 3, key="churn_min_orders",
             help="Customers with fewer orders than this are excluded from this view — they never repeated in the first place."
         )
