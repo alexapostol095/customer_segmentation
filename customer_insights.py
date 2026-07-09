@@ -953,17 +953,49 @@ elif analysis == "Repeat Purchases":
             help="Customers with fewer orders than this are excluded from this view — they never repeated in the first place."
         )
 
-        # ── Per-customer order-level stats, scoped to the current sidebar filters ──
-        cust_orders = (
-            fdf.groupby('CustomerId')
-            .agg(
-                OrderCount = ('InvoiceId',   'nunique'),
-                FirstOrder = ('CreatedDate', 'min'),
-                LastOrder  = ('CreatedDate', 'max'),
-                TotalSpend = ('LineRevenue', 'sum'),
+        @st.cache_data(show_spinner=False)
+        def get_customer_gap_stats(fdf, _fp):
+            """Per-customer order cadence, independent of the 'min orders'
+            threshold so this doesn't get recomputed on every slider tweak.
+
+            AvgGapDays is the median of the actual gaps between consecutive
+            orders (not a first-to-last span average) — that way a customer
+            who placed a burst of orders in one week and then went quiet
+            isn't scored as if they order steadily every few days.
+            """
+            order_dates = (
+                fdf.groupby(['CustomerId', 'InvoiceId'])['CreatedDate']
+                .min()
+                .reset_index()
             )
-            .reset_index()
-        )
+
+            def _median_gap(dates):
+                d = np.sort(dates.unique())
+                if len(d) < 2:
+                    return np.nan
+                diffs = np.diff(d) / np.timedelta64(1, 'D')
+                diffs = diffs[diffs > 0]  # ignore same-day duplicate orders
+                return np.median(diffs) if len(diffs) else np.nan
+
+            stats = (
+                order_dates.groupby('CustomerId')
+                .agg(
+                    OrderCount = ('InvoiceId',   'nunique'),
+                    FirstOrder = ('CreatedDate', 'min'),
+                    LastOrder  = ('CreatedDate', 'max'),
+                )
+                .reset_index()
+            )
+            stats['AvgGapDays'] = stats['CustomerId'].map(
+                order_dates.groupby('CustomerId')['CreatedDate'].apply(_median_gap)
+            )
+
+            spend = fdf.groupby('CustomerId')['LineRevenue'].sum().rename('TotalSpend')
+            stats = stats.merge(spend, on='CustomerId', how='left')
+            return stats
+
+        # ── Per-customer order-level stats, scoped to the current sidebar filters ──
+        cust_orders = get_customer_gap_stats(fdf, _fdf_fp)
         cust_orders = cust_orders[cust_orders['OrderCount'] >= min_orders_regular].copy()
 
         if cust_orders.empty:
@@ -971,13 +1003,9 @@ elif analysis == "Repeat Purchases":
         else:
             snap = fdf['CreatedDate'].max() + pd.Timedelta(days=1)
             cust_orders['Recency'] = (snap - cust_orders['LastOrder']).dt.days
-            # Average gap between orders across their whole history. NaN'd out
-            # when it comes out to 0 (all orders landed on the same calendar
-            # day) since that customer has no meaningful rhythm to plot against.
-            cust_orders['AvgGapDays'] = (
-                (cust_orders['LastOrder'] - cust_orders['FirstOrder']).dt.days
-                / (cust_orders['OrderCount'] - 1)
-            ).replace(0, np.nan)
+            # AvgGapDays (median of consecutive gaps) comes from get_customer_gap_stats.
+            # It's NaN for customers with no positive gap between any two orders (e.g.
+            # every order landed on the same calendar day) — no rhythm to compare against.
 
             n_undetermined = cust_orders['AvgGapDays'].isna().sum()
             plot_df = cust_orders.dropna(subset=['AvgGapDays']).copy()
