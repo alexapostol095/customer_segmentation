@@ -939,15 +939,8 @@ elif analysis == "Repeat Purchases":
             )
 
     with tab4:
-        st.caption(
-            "Explore customers who used to repeat purchase and have since gone quiet. Only "
-            "customers who cleared the 'regular' threshold below are shown — one-time buyers "
-            "never established a repeat pattern, so they're excluded entirely. Nothing here "
-            "auto-labels anyone as churned — select points on the chart that look interesting "
-            "and look at who they are."
-        )
-
         min_orders_regular = st.slider(
+            "Min historical orders to qualify as a 'regular'",
             "Min historical orders to qualify as a 'regular'",
             2, 20, 3, key="churn_min_orders",
             help="Customers with fewer orders than this are excluded from this view — they never repeated in the first place."
