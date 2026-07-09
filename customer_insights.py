@@ -855,7 +855,7 @@ elif analysis == "Category Breakdown":
 elif analysis == "Repeat Purchases":
     st.markdown('<div class="section-header">Repeat Purchases</div>', unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["By Product", "By Category", "Customer Profile"])
+    tab1, tab2, tab3, tab4 = st.tabs(["By Product", "By Category", "Customer Profile", "At Risk / Churned"])
 
     with tab1:
         min_orders = st.slider("Min order count to be 'repeat'", 2, 100, 2)
@@ -937,6 +937,194 @@ elif analysis == "Repeat Purchases":
                 enrich_with_product_name(cust_repeats[['ProductId','OrderCount','TotalQuantity','TotalSpend']], fdf),
                 currency_cols=['TotalSpend']
             )
+
+    with tab4:
+        st.caption(
+            "Explore customers who used to repeat purchase and have since gone quiet. Only "
+            "customers who cleared the 'regular' threshold below are shown — one-time buyers "
+            "never established a repeat pattern, so they're excluded entirely. Nothing here "
+            "auto-labels anyone as churned — select points on the chart that look interesting "
+            "and look at who they are."
+        )
+
+        min_orders_regular = st.slider(
+            "Min historical orders to qualify as a 'regular'",
+            2, 20, 3, key="churn_min_orders",
+            help="Customers with fewer orders than this are excluded from this view — they never repeated in the first place."
+        )
+
+        # ── Per-customer order-level stats, scoped to the current sidebar filters ──
+        cust_orders = (
+            fdf.groupby('CustomerId')
+            .agg(
+                OrderCount = ('InvoiceId',   'nunique'),
+                FirstOrder = ('CreatedDate', 'min'),
+                LastOrder  = ('CreatedDate', 'max'),
+                TotalSpend = ('LineRevenue', 'sum'),
+            )
+            .reset_index()
+        )
+        cust_orders = cust_orders[cust_orders['OrderCount'] >= min_orders_regular].copy()
+
+        if cust_orders.empty:
+            st.info("No customers meet the 'regular' threshold with the current filters. Try lowering it.")
+        else:
+            snap = fdf['CreatedDate'].max() + pd.Timedelta(days=1)
+            cust_orders['Recency'] = (snap - cust_orders['LastOrder']).dt.days
+            # Average gap between orders across their whole history. NaN'd out
+            # when it comes out to 0 (all orders landed on the same calendar
+            # day) since that customer has no meaningful rhythm to plot against.
+            cust_orders['AvgGapDays'] = (
+                (cust_orders['LastOrder'] - cust_orders['FirstOrder']).dt.days
+                / (cust_orders['OrderCount'] - 1)
+            ).replace(0, np.nan)
+
+            n_undetermined = cust_orders['AvgGapDays'].isna().sum()
+            plot_df = cust_orders.dropna(subset=['AvgGapDays']).copy()
+            plot_df['GapRatio'] = plot_df['Recency'] / plot_df['AvgGapDays']
+
+            if n_undetermined:
+                st.caption(
+                    f"{n_undetermined} customer(s) excluded from the chart — all their orders "
+                    "landed on the same calendar day, so there's no rhythm to plot against."
+                )
+
+            col_g1, col_g2 = st.columns([1, 2])
+            with col_g1:
+                show_flat_guide = st.checkbox("Show flat-days guide line", value=False, key="churn_show_flat_guide")
+            with col_g2:
+                flat_guide_days = st.slider(
+                    "Guide line at (days quiet)", 10, 365, 60, key="churn_flat_guide_days",
+                    disabled=not show_flat_guide,
+                    help="Purely a visual reference — draws a horizontal line at this recency, it doesn't filter or label anything."
+                )
+
+            import plotly.graph_objects as go
+
+            max_gap = plot_df['AvgGapDays'].max()
+            max_rec = plot_df['Recency'].max()
+            axis_max = max(max_gap, max_rec, flat_guide_days if show_flat_guide else 0) * 1.05
+
+            max_spend = plot_df['TotalSpend'].max()
+            plot_df['BubbleSize'] = ((plot_df['TotalSpend'] / max_spend * 40) + 6) if max_spend else 10
+
+            fig = go.Figure()
+
+            # Reference diagonal — "on pace" (Recency == their own normal gap)
+            fig.add_trace(go.Scatter(
+                x=[0, axis_max], y=[0, axis_max], mode='lines',
+                line=dict(color='#7a8099', width=1.5, dash='dash'),
+                hoverinfo='skip', showlegend=False,
+            ))
+            fig.add_annotation(
+                x=axis_max * 0.92, y=axis_max * 0.92, text="on pace",
+                showarrow=False, font=dict(color='#7a8099', size=10), xanchor='left'
+            )
+
+            if show_flat_guide:
+                fig.add_trace(go.Scatter(
+                    x=[0, axis_max], y=[flat_guide_days, flat_guide_days], mode='lines',
+                    line=dict(color='#e07a5f', width=1.5, dash='dot'),
+                    hoverinfo='skip', showlegend=False,
+                ))
+                fig.add_annotation(
+                    x=axis_max * 0.02, y=flat_guide_days, text=f"{flat_guide_days}d quiet",
+                    showarrow=False, font=dict(color='#e07a5f', size=10),
+                    xanchor='left', yanchor='bottom'
+                )
+
+            fig.add_trace(go.Scatter(
+                x=plot_df['AvgGapDays'], y=plot_df['Recency'],
+                mode='markers',
+                marker=dict(
+                    size=plot_df['BubbleSize'],
+                    color=plot_df['GapRatio'],
+                    colorscale='YlOrRd',
+                    showscale=True,
+                    colorbar=dict(title='Recency ÷<br>normal gap', tickformat=',.1f'),
+                    line=dict(color='#2e3246', width=0.5),
+                    opacity=0.85,
+                ),
+                customdata=plot_df[['CustomerId', 'OrderCount', 'TotalSpend', 'GapRatio']].values,
+                hovertemplate=(
+                    '<b>%{customdata[0]}</b><br>'
+                    'Normal gap: %{x:,.0f}d<br>'
+                    'Days since last order: %{y:,.0f}d<br>'
+                    'Ratio: %{customdata[3]:.1f}x<br>'
+                    'Orders: %{customdata[1]:,}<br>'
+                    'Total spend: €%{customdata[2]:,.0f}'
+                    '<extra></extra>'
+                ),
+            ))
+
+            fig.update_layout(
+                paper_bgcolor='#151720',
+                plot_bgcolor='#151720',
+                font=dict(color='#d4cfc7', size=11),
+                xaxis=dict(title="Their normal order interval (days)", gridcolor='#2e3246', zerolinecolor='#2e3246', range=[0, axis_max]),
+                yaxis=dict(title="Days since last order", gridcolor='#2e3246', zerolinecolor='#2e3246', range=[0, axis_max]),
+                title=dict(text="Recency vs. normal buying rhythm — select a region to explore", font=dict(size=13, color='#f0ece3')),
+                hoverlabel=dict(bgcolor='#1c1f2b', bordercolor='#e8c97e', font=dict(color='#f0ece3', size=12)),
+                dragmode='lasso',
+                height=560,
+                margin=dict(l=60, r=60, t=60, b=60),
+                showlegend=False,
+            )
+
+            selected_ids = []
+            try:
+                event = st.plotly_chart(
+                    fig, width='stretch', on_select="rerun",
+                    selection_mode=["points", "box", "lasso"],
+                    key="churn_scatter_select",
+                )
+                pts = (event or {}).get('selection', {}).get('points', [])
+                selected_ids = [p['customdata'][0] for p in pts if 'customdata' in p]
+            except TypeError:
+                # Older Streamlit without on_select support — chart is still
+                # viewable, selection just isn't available.
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Point selection needs a newer Streamlit version — browse the table below instead.")
+
+            st.markdown("")
+            if selected_ids:
+                sel_df = plot_df[plot_df['CustomerId'].isin(selected_ids)]
+                c1, c2 = st.columns(2)
+                with c1: metric_card("Selected customers", str(len(sel_df)))
+                with c2: metric_card("Their historical spend", fmt_currency(sel_df['TotalSpend'].sum()))
+                st.caption("Showing your selection from the chart. Clear the selection on the chart to browse everyone.")
+                table_df = sel_df
+            else:
+                st.caption("Nothing selected — showing everyone who qualifies. Lasso or box-select points above to narrow this down.")
+                table_df = plot_df
+
+            table_df = table_df.sort_values('Recency', ascending=False).copy()
+            display_df = table_df[['CustomerId', 'OrderCount', 'AvgGapDays', 'Recency', 'GapRatio', 'TotalSpend']].copy()
+            display_df['AvgGapDays'] = display_df['AvgGapDays'].round(1)
+            display_df['GapRatio'] = display_df['GapRatio'].round(2)
+            show_df(display_df, currency_cols=['TotalSpend'])
+
+            # ── Drill-down: what did this customer used to buy? ────────────────
+            st.markdown("**Drill-down — what did they used to buy?**")
+            drilldown_pool = sorted(table_df['CustomerId'].tolist())
+            if not drilldown_pool:
+                st.info("No customers to drill into.")
+            else:
+                churn_cust_id = st.selectbox("Select customer", drilldown_pool, key="churn_drilldown_cust")
+                cust_hist = (
+                    fdf[fdf['CustomerId'] == churn_cust_id]
+                    .groupby('ProductId')
+                    .agg(
+                        OrderCount = ('InvoiceId',   'nunique'),
+                        TotalSpend = ('LineRevenue', 'sum'),
+                        LastBought = ('CreatedDate',  'max'),
+                    )
+                    .sort_values('TotalSpend', ascending=False)
+                    .reset_index()
+                    .head(10)
+                )
+                cust_hist['LastBought'] = cust_hist['LastBought'].dt.date.astype(str)
+                show_df(enrich_with_product_name(cust_hist, fdf), currency_cols=['TotalSpend'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════════
