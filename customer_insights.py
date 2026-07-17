@@ -471,6 +471,47 @@ def run_kvi_classification(order_lines, kvi_score_threshold=2.0, core_percentile
     dfAll['ProductId'] = dfAll['ProductId'].astype(str)
     return dfAll
 
+@st.cache_data(show_spinner=False)
+def get_customer_gap_stats(fdf, _fp):
+    """Per-customer order cadence, independent of the 'min orders' threshold
+    so this doesn't get recomputed on every slider tweak.
+
+    AvgGapDays is the median of the actual gaps between consecutive orders
+    (not a first-to-last span average) — that way a customer who placed a
+    burst of orders in one week and then went quiet isn't scored as if they
+    order steadily every few days.
+    """
+    order_dates = (
+        fdf.groupby(['CustomerId', 'InvoiceId'])['CreatedDate']
+        .min()
+        .reset_index()
+    )
+
+    def _median_gap(dates):
+        d = np.sort(dates.unique())
+        if len(d) < 2:
+            return np.nan
+        diffs = np.diff(d) / np.timedelta64(1, 'D')
+        diffs = diffs[diffs > 0]  # ignore same-day duplicate orders
+        return np.median(diffs) if len(diffs) else np.nan
+
+    stats = (
+        order_dates.groupby('CustomerId')
+        .agg(
+            OrderCount = ('InvoiceId',   'nunique'),
+            FirstOrder = ('CreatedDate', 'min'),
+            LastOrder  = ('CreatedDate', 'max'),
+        )
+        .reset_index()
+    )
+    stats['AvgGapDays'] = stats['CustomerId'].map(
+        order_dates.groupby('CustomerId')['CreatedDate'].apply(_median_gap)
+    )
+
+    spend = fdf.groupby('CustomerId')['LineRevenue'].sum().rename('TotalSpend')
+    stats = stats.merge(spend, on='CustomerId', how='left')
+    return stats
+
 # ── App ────────────────────────────────────────────────────────────────────────
 st.markdown("<h1 style='margin-bottom:0'>Customer Insights Explorer</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#9a8f85;margin-top:0.2rem;margin-bottom:2rem'>Upload your order lines data to begin exploring</p>", unsafe_allow_html=True)
@@ -944,47 +985,6 @@ elif analysis == "Repeat Purchases":
             2, 20, 3, key="churn_min_orders",
             help="Customers with fewer orders than this are excluded from this view — they never repeated in the first place."
         )
-
-        @st.cache_data(show_spinner=False)
-        def get_customer_gap_stats(fdf, _fp):
-            """Per-customer order cadence, independent of the 'min orders'
-            threshold so this doesn't get recomputed on every slider tweak.
-
-            AvgGapDays is the median of the actual gaps between consecutive
-            orders (not a first-to-last span average) — that way a customer
-            who placed a burst of orders in one week and then went quiet
-            isn't scored as if they order steadily every few days.
-            """
-            order_dates = (
-                fdf.groupby(['CustomerId', 'InvoiceId'])['CreatedDate']
-                .min()
-                .reset_index()
-            )
-
-            def _median_gap(dates):
-                d = np.sort(dates.unique())
-                if len(d) < 2:
-                    return np.nan
-                diffs = np.diff(d) / np.timedelta64(1, 'D')
-                diffs = diffs[diffs > 0]  # ignore same-day duplicate orders
-                return np.median(diffs) if len(diffs) else np.nan
-
-            stats = (
-                order_dates.groupby('CustomerId')
-                .agg(
-                    OrderCount = ('InvoiceId',   'nunique'),
-                    FirstOrder = ('CreatedDate', 'min'),
-                    LastOrder  = ('CreatedDate', 'max'),
-                )
-                .reset_index()
-            )
-            stats['AvgGapDays'] = stats['CustomerId'].map(
-                order_dates.groupby('CustomerId')['CreatedDate'].apply(_median_gap)
-            )
-
-            spend = fdf.groupby('CustomerId')['LineRevenue'].sum().rename('TotalSpend')
-            stats = stats.merge(spend, on='CustomerId', how='left')
-            return stats
 
         # ── Per-customer order-level stats, scoped to the current sidebar filters ──
         cust_orders = get_customer_gap_stats(fdf, _fdf_fp)
@@ -1911,10 +1911,33 @@ elif analysis == "Basket Exploration":
         total_customers = fdf['CustomerId'].nunique()
         coverage_pct = len(covered_customers) / total_customers if total_customers > 0 else 0
 
-        c1, c2, c3 = st.columns(3)
+        total_revenue = fdf['LineRevenue'].sum()
+
+        # Full wallet revenue (any product) of customers who touch at least
+        # one displayed basket — how much of the business these customers
+        # represent overall, not just what they spend on the basket itself.
+        covered_customer_revenue = fdf[fdf['CustomerId'].isin(covered_customers)]['LineRevenue'].sum()
+        covered_customer_revenue_pct = covered_customer_revenue / total_revenue if total_revenue > 0 else 0
+
+        # Revenue the displayed baskets directly generate (sum of each
+        # basket's own product-specific revenue, same figures shown in the
+        # table below — if baskets share a product and overlap is allowed,
+        # that product's revenue counts toward each basket it belongs to,
+        # consistent with how BasketRevenue is already shown per row).
+        baskets_revenue = exp_df['BasketRevenue'].sum()
+        baskets_revenue_pct = baskets_revenue / total_revenue if total_revenue > 0 else 0
+
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1: metric_card("Baskets shown", str(len(exp_df)))
         with c2: metric_card("Unique customers covered", f"{len(covered_customers):,}")
         with c3: metric_card("% of total customers", f"{coverage_pct:.1%}")
+        with c4: metric_card("% of revenue (these customers)", f"{covered_customer_revenue_pct:.1%}")
+        with c5: metric_card("% of revenue (these baskets)", f"{baskets_revenue_pct:.1%}")
+        st.caption(
+            "\"These customers\" is the full wallet share (any product) of everyone who touches "
+            "at least one basket shown. \"These baskets\" is revenue from just the basket products "
+            "themselves within qualifying orders — a smaller, more specific slice."
+        )
 
         show_df(display_df)
 
