@@ -1429,7 +1429,16 @@ elif analysis == "Basket Segmentation":
 
     # Show defined baskets with info
     if st.session_state['defined_baskets']:
-        st.markdown("**Defined baskets**")
+        header_col, confirm_col, clear_col = st.columns([2, 1, 1])
+        with header_col:
+            st.markdown("**Defined baskets**")
+        with confirm_col:
+            confirm_clear = st.checkbox("Confirm", key="confirm_clear_baskets", help="Tick to enable the clear-all button below")
+        with clear_col:
+            if st.button("Clear All", key="clear_all_baskets_btn", disabled=not confirm_clear):
+                st.session_state['defined_baskets'] = {}
+                st.session_state['confirm_clear_baskets'] = False
+                st.rerun()
         for bname, bprods in list(st.session_state['defined_baskets'].items()):
             with st.expander(f"{bname} — {len(bprods)} products", expanded=False):
                 info = basket_info(bprods, bc_df)
