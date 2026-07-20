@@ -1749,7 +1749,7 @@ elif analysis == "Basket Exploration":
     st.caption(f"Using top {top_pct_prods}% → {n_prods_keep:,} of {len(prod_inv_counts):,} products")
 
     @st.cache_data(show_spinner=False)
-    def compute_basket_exploration(df, size, n_results, pool_multiplier=3, _fp=''):
+    def compute_basket_exploration(df, size, pool_size, _fp=''):
         from collections import Counter
         has_cost = 'TotalCostPerUnit' in df.columns
         if has_cost:
@@ -1772,7 +1772,13 @@ elif analysis == "Basket Exploration":
         if not combo_counter:
             return pd.DataFrame()
 
-        top_combos = combo_counter.most_common(n_results * pool_multiplier)
+        # This pool is deliberately independent of the "Top N baskets to show"
+        # slider — that slider only controls the final display count and how
+        # many of these already-scored candidates the no-overlap filter gets
+        # to pick from. Scoring must cover the whole realistic candidate set
+        # up front, or raising "Top N" would appear to "discover" baskets that
+        # were always there, just never scored.
+        top_combos = combo_counter.most_common(min(len(combo_counter), pool_size))
 
         # ── One-time precomputation, reused for every candidate combo ──────────
         df = df.assign(_p=df['ProductId'].astype(str))
@@ -1839,7 +1845,10 @@ elif analysis == "Basket Exploration":
         return pd.DataFrame(rows)
 
     with st.spinner("Computing basket exploration..."):
-        exp_df = compute_basket_exploration(exp_input_df, basket_size, top_n_exp, 3, _fdf_fp)
+        # Fixed and generous — independent of "Top N baskets to show" so the
+        # slider only changes the final display count, not what gets scored.
+        CANDIDATE_POOL_SIZE = 300
+        exp_df = compute_basket_exploration(exp_input_df, basket_size, CANDIDATE_POOL_SIZE, _fdf_fp)
 
     if exp_df.empty:
         st.info("Not enough data for this basket size. Try reducing the basket size or expanding the product universe.")
