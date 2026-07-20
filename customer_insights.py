@@ -1941,6 +1941,49 @@ elif analysis == "Basket Exploration":
 
         show_df(display_df)
 
+        # ── Export to Basket Segmentation ──────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Export to Basket Segmentation**")
+        st.caption(
+            "Send any of the baskets shown above into Basket Segmentation as defined baskets, "
+            "ready to assign customers against."
+        )
+
+        if 'defined_baskets' not in st.session_state:
+            st.session_state['defined_baskets'] = {}
+
+        exp_reset = exp_df.reset_index(drop=True)
+        export_options = [f"{i + 1}. {row['Products']}" for i, row in exp_reset.iterrows()]
+        label_to_idx = {label: i for i, label in enumerate(export_options)}
+
+        export_selected = st.multiselect(
+            "Baskets to export", export_options, default=export_options,
+            key="exp_export_selection"
+        )
+
+        if st.button("Export selected to Basket Segmentation", key="exp_export_btn", disabled=not export_selected):
+            existing_names = set(st.session_state['defined_baskets'].keys())
+            added = 0
+            for label in export_selected:
+                idx = label_to_idx[label]
+                combo = exp_reset.loc[idx, 'Combo']
+                products_str = exp_reset.loc[idx, 'Products']
+                base_name = f"Explored: {products_str}"
+                if len(base_name) > 80:
+                    base_name = base_name[:77] + "..."
+                name = base_name
+                suffix = 2
+                while name in existing_names:
+                    name = f"{base_name} ({suffix})"
+                    suffix += 1
+                st.session_state['defined_baskets'][name] = [str(p) for p in combo]
+                existing_names.add(name)
+                added += 1
+            st.success(
+                f"Exported {added} basket(s) to Basket Segmentation. Switch to the Basket "
+                "Segmentation view to review, edit, or assign customers against them."
+            )
+
         # ── Scatter plot ──────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("**Visualisation** — bubble size = basket revenue, hover for details")
