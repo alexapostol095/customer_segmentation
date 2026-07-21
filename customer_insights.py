@@ -247,6 +247,30 @@ def fmt_currency(v):
         return f"€{v/1_000:.1f}K"
     return f"€{v:.0f}"
 
+def safe_sheet_name(raw_name, used_names=None, fallback="Sheet"):
+    """Sanitize a string into a valid, unique Excel worksheet title.
+
+    Excel forbids \\ / ? * [ ] : in sheet names and caps length at 31 chars.
+    Basket/group names (e.g. "Explored: P1 + P2 + P3", or anything with a
+    slash or bracket in it) will otherwise crash the export with a raw
+    openpyxl ValueError. `used_names` (a set, mutated in place) also avoids
+    collisions after truncation/sanitization by appending a numeric suffix.
+    """
+    name = str(raw_name)
+    for ch in ['\\', '/', '?', '*', '[', ']', ':']:
+        name = name.replace(ch, '-')
+    name = name.strip().strip("'")[:31] or fallback
+
+    if used_names is not None:
+        base = name
+        suffix = 2
+        while name in used_names:
+            cut = 31 - len(f" ({suffix})")
+            name = f"{base[:cut]} ({suffix})"
+            suffix += 1
+        used_names.add(name)
+    return name
+
 def euro_axis_formatter(x, _):
     if x >= 1_000_000:
         return f"€{x/1_000_000:.1f}M"
@@ -1751,6 +1775,7 @@ elif analysis == "Basket Exploration":
     @st.cache_data(show_spinner=False)
     def compute_basket_exploration(df, size, pool_size, _fp=''):
         from collections import Counter
+        from math import comb
         has_cost = 'TotalCostPerUnit' in df.columns
         if has_cost:
             df = df.copy()
@@ -1762,23 +1787,40 @@ elif analysis == "Basket Exploration":
             .apply(lambda x: sorted(x.astype(str).unique().tolist()))
             .reset_index()
         )
+        inv_products['n_items'] = inv_products['ProductId'].apply(len)
 
-        # Guard against a combinatorial blow-up: an invoice with e.g. 200
-        # distinct products would generate ~1.3 million 3-item combinations,
-        # which can exhaust memory/CPU and crash the app. Invoices that large
-        # aren't representative of a typical "basket" anyway (bulk/wholesale
-        # restocks or multiple orders merged under one InvoiceId) — they're
-        # skipped for combo-counting only; nothing else in the app is affected.
-        MAX_ITEMS_PER_INVOICE = 100
-        oversized_invoices = (inv_products['ProductId'].apply(len) > MAX_ITEMS_PER_INVOICE).sum()
+        # Guard against a combinatorial blow-up. A single invoice with 100
+        # distinct products alone generates C(100,3) = 161,700 combinations —
+        # and on real wholesale data, it's common to have *thousands* of
+        # invoices in the 40-100 item range, not just one outlier. A flat
+        # per-invoice cap doesn't bound that: it only takes enough
+        # medium-large invoices to still exhaust memory/CPU even if each one
+        # individually looks "reasonable". Instead, bound the actual total
+        # work directly — process invoices smallest-first and stop once the
+        # next (necessarily larger-or-equal) invoice would push the running
+        # combination count past a fixed budget. Everything past that point
+        # is skipped for combo-counting only; nothing else in the app is
+        # affected, and smaller/more typical invoices are always prioritized
+        # over large bulk/wholesale orders that aren't representative of a
+        # typical "basket" anyway.
+        COMBO_BUDGET = 1_000_000
+        eligible = inv_products[inv_products['n_items'] >= size].sort_values('n_items')
 
         combo_counter = Counter()
-        for prods in inv_products['ProductId']:
-            if len(prods) > MAX_ITEMS_PER_INVOICE:
-                continue
-            if len(prods) >= size:
-                for combo in combinations(prods, size):
-                    combo_counter[combo] += 1
+        running_ops = 0
+        included_count = 0
+        for prods, n_items in zip(eligible['ProductId'], eligible['n_items']):
+            ops = comb(n_items, size)
+            if running_ops + ops > COMBO_BUDGET:
+                # Every remaining invoice is >= this size, so all of them
+                # would also exceed the budget — safe to stop entirely.
+                break
+            running_ops += ops
+            included_count += 1
+            for combo in combinations(prods, size):
+                combo_counter[combo] += 1
+
+        oversized_invoices = len(eligible) - included_count
 
         if not combo_counter:
             return pd.DataFrame(), oversized_invoices
@@ -1863,9 +1905,9 @@ elif analysis == "Basket Exploration":
 
     if oversized_invoices:
         st.caption(
-            f"{oversized_invoices:,} invoice(s) with more than 100 distinct products were "
-            "excluded from basket combinations (they're too large to represent a typical "
-            "basket, and would otherwise be extremely expensive to enumerate)."
+            f"{oversized_invoices:,} of the largest invoices were excluded from basket "
+            "combinations to keep this computation fast and stable — smaller, more typical "
+            "invoices are always prioritized first."
         )
 
     if exp_df.empty:
@@ -2900,6 +2942,7 @@ elif analysis == "KVI Classification":
 
             output = io.BytesIO()
             sheets_written = 0
+            used_sheet_names = set()
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
 
@@ -2922,7 +2965,7 @@ elif analysis == "KVI Classification":
                             group_kvi = run_kvi_classification(group_input, kvi_threshold, core_pct)
                         except Exception:
                             continue
-                        sheet_name = str(group)[:31].replace('/', '-').replace('\\', '-').replace('*', '').replace('?', '').replace('[', '').replace(']', '') or f"Group_{sheets_written}"
+                        sheet_name = safe_sheet_name(group, used_sheet_names, fallback=f"Group_{sheets_written}")
                         group_kvi[export_cols].to_excel(writer, sheet_name=sheet_name, index=False)
                         sheets_written += 1
                         summary_rows.append({
@@ -2936,11 +2979,12 @@ elif analysis == "KVI Classification":
                         })
 
                     if summary_rows:
-                        pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
+                        summary_sheet_name = safe_sheet_name('Summary', used_sheet_names)
+                        pd.DataFrame(summary_rows).to_excel(writer, sheet_name=summary_sheet_name, index=False)
                         sheets_written += 1
 
                 else:
-                    sheet_name = (scope_label[:31].replace('/', '-').replace('=', '-')) or 'Results'
+                    sheet_name = safe_sheet_name(scope_label, used_sheet_names, fallback='Results')
                     kvi_df[export_cols].to_excel(writer, sheet_name=sheet_name, index=False)
                     sheets_written += 1
 
