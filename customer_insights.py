@@ -1763,14 +1763,25 @@ elif analysis == "Basket Exploration":
             .reset_index()
         )
 
+        # Guard against a combinatorial blow-up: an invoice with e.g. 200
+        # distinct products would generate ~1.3 million 3-item combinations,
+        # which can exhaust memory/CPU and crash the app. Invoices that large
+        # aren't representative of a typical "basket" anyway (bulk/wholesale
+        # restocks or multiple orders merged under one InvoiceId) — they're
+        # skipped for combo-counting only; nothing else in the app is affected.
+        MAX_ITEMS_PER_INVOICE = 100
+        oversized_invoices = (inv_products['ProductId'].apply(len) > MAX_ITEMS_PER_INVOICE).sum()
+
         combo_counter = Counter()
         for prods in inv_products['ProductId']:
+            if len(prods) > MAX_ITEMS_PER_INVOICE:
+                continue
             if len(prods) >= size:
                 for combo in combinations(prods, size):
                     combo_counter[combo] += 1
 
         if not combo_counter:
-            return pd.DataFrame()
+            return pd.DataFrame(), oversized_invoices
 
         # This pool is deliberately independent of the "Top N baskets to show"
         # slider — that slider only controls the final display count and how
@@ -1842,13 +1853,20 @@ elif analysis == "Basket Exploration":
                 'AvgRevenuePerInvoice': round(avg_rev, 0),
             })
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows), oversized_invoices
 
     with st.spinner("Computing basket exploration..."):
         # Fixed and generous — independent of "Top N baskets to show" so the
         # slider only changes the final display count, not what gets scored.
         CANDIDATE_POOL_SIZE = 300
-        exp_df = compute_basket_exploration(exp_input_df, basket_size, CANDIDATE_POOL_SIZE, _fdf_fp)
+        exp_df, oversized_invoices = compute_basket_exploration(exp_input_df, basket_size, CANDIDATE_POOL_SIZE, _fdf_fp)
+
+    if oversized_invoices:
+        st.caption(
+            f"{oversized_invoices:,} invoice(s) with more than 100 distinct products were "
+            "excluded from basket combinations (they're too large to represent a typical "
+            "basket, and would otherwise be extremely expensive to enumerate)."
+        )
 
     if exp_df.empty:
         st.info("Not enough data for this basket size. Try reducing the basket size or expanding the product universe.")
