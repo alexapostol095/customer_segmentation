@@ -240,6 +240,26 @@ def enrich_with_product_name(result_df, source_df, id_col='ProductId'):
     cols.insert(idx + 1, cols.pop(cols.index('ProductName')))
     return result_df[cols]
 
+def format_product_list_with_names(product_ids, source_df, id_col='ProductId'):
+    """Render a list of product IDs as 'ID (Name)' where a Name/Description
+    column exists and has a value for that product; falls back to the bare
+    ID otherwise (missing name, or no name column at all in source_df)."""
+    name_col = get_product_name_col(source_df)
+    if name_col is None:
+        return ', '.join(str(p) for p in product_ids)
+    name_map = (
+        source_df.assign(**{id_col: source_df[id_col].astype(str)})
+        .drop_duplicates(id_col)
+        .set_index(id_col)[name_col]
+    )
+    parts = []
+    for p in product_ids:
+        pid = str(p)
+        name = name_map.get(pid)
+        parts.append(f"{pid} ({name})" if pd.notna(name) and name else pid)
+    return ', '.join(parts)
+    return result_df[cols]
+
 def fmt_currency(v):
     if v >= 1_000_000:
         return f"€{v/1_000_000:.1f}M"
@@ -1403,7 +1423,7 @@ elif analysis == "Basket Segmentation":
             with st.expander(f"{sug['name']} — {len(sug['products'])} products", expanded=False):
                 if info:
                     render_basket_metrics(info)
-                st.markdown(f"**Products:** {', '.join(sug['products'])}")
+                st.markdown(f"**Products:** {format_product_list_with_names(sug['products'], bc_df)}")
                 if st.button(f"Load into editor", key=f"load_sug_{i}"):
                     st.session_state['_basket_name_val'] = sug['name']
                     st.session_state['_basket_products_val'] = sug['products']
@@ -1465,10 +1485,36 @@ elif analysis == "Basket Segmentation":
                 info = basket_info(bprods, bc_df)
                 if info:
                     render_basket_metrics(info)
-                st.markdown(f"**Products:** {', '.join(bprods)}")
-                if st.button("Remove", key=f"remove_basket_{bname}"):
-                    del st.session_state['defined_baskets'][bname]
-                    st.rerun()
+                st.markdown(f"**Products:** {format_product_list_with_names(bprods, bc_df)}")
+
+                rename_col, rename_btn_col, remove_col = st.columns([3, 1, 1])
+                with rename_col:
+                    new_name_input = st.text_input(
+                        "Rename basket", value=bname, key=f"rename_input_{bname}",
+                        label_visibility="collapsed"
+                    )
+                with rename_btn_col:
+                    if st.button("Rename", key=f"rename_btn_{bname}"):
+                        new_name = new_name_input.strip()
+                        if not new_name:
+                            st.warning("Basket name can't be empty.")
+                        elif new_name == bname:
+                            pass
+                        elif new_name in st.session_state['defined_baskets']:
+                            st.warning(f"A basket named '{new_name}' already exists. Choose a different name.")
+                        else:
+                            # Rebuild the dict swapping the key in place, so
+                            # basket order is preserved rather than the
+                            # renamed basket jumping to the end.
+                            st.session_state['defined_baskets'] = {
+                                (new_name if k == bname else k): v
+                                for k, v in st.session_state['defined_baskets'].items()
+                            }
+                            st.rerun()
+                with remove_col:
+                    if st.button("Remove", key=f"remove_basket_{bname}"):
+                        del st.session_state['defined_baskets'][bname]
+                        st.rerun()
     else:
         st.info("No baskets defined yet. Load a suggestion or build one manually above.")
 
