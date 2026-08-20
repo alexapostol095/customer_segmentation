@@ -3031,6 +3031,14 @@ elif analysis == "Time Analysis":
                 min_value=ta_min, max_value=ta_max, key="ta_period_b"
             )
 
+        if st.button("🔄 Swap Period A ↔ Period B", key="ta_swap_btn"):
+            if len(period_a) == 2 and len(period_b) == 2:
+                st.session_state['ta_period_a'] = period_b
+                st.session_state['ta_period_b'] = period_a
+                st.rerun()
+            else:
+                st.warning("Select a full date range for both periods before swapping.")
+
         if len(period_a) != 2 or len(period_b) != 2:
             st.warning("Select a start and end date for both periods.")
         else:
@@ -3170,6 +3178,40 @@ elif analysis == "Time Analysis":
                     st.markdown(f"**{len(cust_cmp)} customers active in {presence_label}**")
                     _ta_display_table(cust_cmp, show_avg_qty=True)
 
+                    # Always computed on the full outer-merge picture, independent
+                    # of the "only compare items present in both periods" toggle
+                    # above -- this section's whole point is to surface exactly
+                    # what that toggle would otherwise hide.
+                    cust_cmp_full = _ta_build_comparison(df_a, df_b, 'CustomerId', only_both=False)
+                    new_custs = cust_cmp_full[cust_cmp_full['Orders_A'] == 0].sort_values('Revenue_B', ascending=False)
+                    dropped_custs = cust_cmp_full[cust_cmp_full['Orders_B'] == 0].sort_values('Revenue_A', ascending=False)
+
+                    st.markdown("---")
+                    st.markdown("**New in Period B / Dropped after Period A**")
+                    c1, c2 = st.columns(2)
+                    with c1: metric_card("New Customers", str(len(new_custs)), f"{fmt_currency(new_custs['Revenue_B'].sum())} in Period B")
+                    with c2: metric_card("Dropped Customers", str(len(dropped_custs)), f"{fmt_currency(dropped_custs['Revenue_A'].sum())} lost from Period A")
+
+                    col_new, col_dropped = st.columns(2)
+                    with col_new:
+                        st.markdown("*New customers (no activity in Period A)*")
+                        if new_custs.empty:
+                            st.caption("None.")
+                        else:
+                            show_df(
+                                new_custs[['CustomerId', 'Revenue_B', 'Orders_B']].rename(columns={'Revenue_B': 'Revenue', 'Orders_B': 'Orders'}),
+                                currency_cols=['Revenue']
+                            )
+                    with col_dropped:
+                        st.markdown("*Dropped customers (no activity in Period B)*")
+                        if dropped_custs.empty:
+                            st.caption("None.")
+                        else:
+                            show_df(
+                                dropped_custs[['CustomerId', 'Revenue_A', 'Orders_A']].rename(columns={'Revenue_A': 'Revenue', 'Orders_A': 'Orders'}),
+                                currency_cols=['Revenue']
+                            )
+
                     if not cust_cmp.empty:
                         st.markdown("---")
                         st.markdown("**Drill into a single customer**")
@@ -3201,6 +3243,42 @@ elif analysis == "Time Analysis":
                     prod_cmp = enrich_with_product_name(prod_cmp, fdf, id_col='ProductId')
                     st.markdown(f"**{len(prod_cmp)} products sold in {presence_label}**")
                     _ta_display_table(prod_cmp, show_avg_qty=True, show_avg_price=True)
+
+                    prod_cmp_full = _ta_build_comparison(df_a, df_b, 'ProductId', only_both=False)
+                    new_prods = prod_cmp_full[prod_cmp_full['Orders_A'] == 0].sort_values('Revenue_B', ascending=False)
+                    dropped_prods = prod_cmp_full[prod_cmp_full['Orders_B'] == 0].sort_values('Revenue_A', ascending=False)
+
+                    st.markdown("---")
+                    st.markdown("**New in Period B / Dropped after Period A**")
+                    c1, c2 = st.columns(2)
+                    with c1: metric_card("New Products", str(len(new_prods)), f"{fmt_currency(new_prods['Revenue_B'].sum())} in Period B")
+                    with c2: metric_card("Dropped Products", str(len(dropped_prods)), f"{fmt_currency(dropped_prods['Revenue_A'].sum())} lost from Period A")
+
+                    col_new, col_dropped = st.columns(2)
+                    with col_new:
+                        st.markdown("*New products (no sales in Period A)*")
+                        if new_prods.empty:
+                            st.caption("None.")
+                        else:
+                            show_df(
+                                enrich_with_product_name(
+                                    new_prods[['ProductId', 'Revenue_B', 'Quantity_B']].rename(columns={'Revenue_B': 'Revenue', 'Quantity_B': 'Quantity'}),
+                                    fdf, id_col='ProductId'
+                                ),
+                                currency_cols=['Revenue']
+                            )
+                    with col_dropped:
+                        st.markdown("*Dropped products (no sales in Period B)*")
+                        if dropped_prods.empty:
+                            st.caption("None.")
+                        else:
+                            show_df(
+                                enrich_with_product_name(
+                                    dropped_prods[['ProductId', 'Revenue_A', 'Quantity_A']].rename(columns={'Revenue_A': 'Revenue', 'Quantity_A': 'Quantity'}),
+                                    fdf, id_col='ProductId'
+                                ),
+                                currency_cols=['Revenue']
+                            )
 
                 # ── Per grouping ─────────────────────────────────────────────────
                 with tab_group:
