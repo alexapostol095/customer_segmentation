@@ -2279,6 +2279,12 @@ elif analysis == "Basket Exploration":
         # product -> set of invoices (already existed, keep it)
         prod_to_invoices = df.groupby('_p')['InvoiceId'].apply(set).to_dict()
 
+        # Total invoices in this same scope, for Lift — how much more often a
+        # combo appears together than pure chance (each product's own
+        # popularity) would predict. Computed from the same universe as
+        # prod_to_invoices/basket_inv below, so the ratio is self-consistent.
+        total_invoices = df['InvoiceId'].nunique()
+
         # invoice -> customer (single lookup, avoids re-filtering df per combo)
         inv_to_cust = df.drop_duplicates('InvoiceId').set_index('InvoiceId')['CustomerId']
 
@@ -2306,7 +2312,7 @@ elif analysis == "Basket Exploration":
                     'InvoiceCount': inv_count, 'CustomerCount': 0,
                     'CustomerSet': frozenset(),
                     'BasketRevenue': 0, 'BasketMargin': 0 if has_cost else None,
-                    'AvgRevenuePerInvoice': 0,
+                    'AvgRevenuePerInvoice': 0, 'Lift': None,
                 })
                 continue
 
@@ -2324,6 +2330,16 @@ elif analysis == "Basket Exploration":
             cust_count = len(basket_customers)
             avg_rev = revenue / len(basket_inv) if len(basket_inv) > 0 else 0
 
+            # Lift: how much more often this combo appears together than
+            # chance would predict, given each product's own popularity.
+            # 1.0 = no association (pure coincidence), >1 = genuinely linked,
+            # <1 = these products actually get bought *instead of* each other.
+            support_combo = len(basket_inv) / total_invoices
+            support_product = 1.0
+            for p in combo_list:
+                support_product *= len(prod_to_invoices.get(p, set())) / total_invoices
+            lift = (support_combo / support_product) if support_product > 0 else None
+
             rows.append({
                 'Combo':              combo,
                 'Products':           ' + '.join(str(p) for p in combo),
@@ -2333,6 +2349,7 @@ elif analysis == "Basket Exploration":
                 'BasketRevenue':      round(revenue, 0),
                 'BasketMargin':       round(margin, 0) if margin is not None else None,
                 'AvgRevenuePerInvoice': round(avg_rev, 0),
+                'Lift':               round(lift, 2) if lift is not None else None,
             })
 
         return pd.DataFrame(rows), oversized_invoices
@@ -2454,6 +2471,14 @@ elif analysis == "Basket Exploration":
             "themselves within qualifying orders — a smaller, more specific slice."
         )
 
+        st.caption(
+            "**Lift** measures how much more often a basket's products appear together than pure "
+            "chance would predict, given how popular each product is on its own. Lift = 1.0 means "
+            "no real association (they just happen to both be popular); above 1.0 means these "
+            "products are genuinely linked — a lift of 3 means they co-occur 3× more often than "
+            "chance alone would suggest; below 1.0 means customers tend to buy these products "
+            "*instead of* each other rather than together."
+        )
         show_df(display_df)
 
         # ── Export to Basket Segmentation ──────────────────────────────────
