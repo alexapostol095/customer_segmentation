@@ -2415,6 +2415,15 @@ elif analysis == "Basket Exploration":
                 )
             )
 
+        # Move Lift right next to InvoiceCount — it was ending up as one of the
+        # last columns (after Product Names, BasketRevenue, etc.), easy to miss
+        # without scrolling the table horizontally.
+        if 'Lift' in display_df.columns:
+            cols = display_df.columns.tolist()
+            cols.remove('Lift')
+            cols.insert(cols.index('InvoiceCount') + 1, 'Lift')
+            display_df = display_df[cols]
+
         # ── Assortment coverage ───────────────────────────────────────────
         # Unique customers covered by at least one basket in the displayed list
         # Track basket_inv sets computed during scoring so we don't redo it here
