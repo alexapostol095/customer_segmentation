@@ -298,46 +298,31 @@ def euro_axis_formatter(x, _):
         return f"€{x/1_000:.0f}K"
     return f"€{x:.0f}"
 
-def metric_card(label, value, sub="", help=None):
-    """help: optional tooltip text shown on hover via a small (ⓘ) marker next
-    to the label — for composite/non-obvious metrics (KVI Score, GapRatio,
-    AssignmentStat, etc.) where the number alone doesn't explain itself."""
-    help_html = ""
-    if help:
-        help_escaped = str(help).replace('"', '&quot;')
-        help_html = f' <span title="{help_escaped}" style="cursor:help;color:#7a8099;font-size:0.75rem;">ⓘ</span>'
+def metric_card(label, value, sub=""):
     st.markdown(f"""
     <div class="metric-card">
-        <div class="label">{label}{help_html}</div>
+        <div class="label">{label}</div>
         <div class="value">{value}</div>
         {'<div class="sub">' + sub + '</div>' if sub else ''}
     </div>""", unsafe_allow_html=True)
 
-def show_df(data, hide_index=True, currency_cols=None, percent_cols=None, help_cols=None):
+def show_df(data, hide_index=True, currency_cols=None, percent_cols=None):
     """Display a full-width dataframe, compatible with both old Streamlit
     (use_container_width=True) and new Streamlit (width='stretch') APIs.
 
     currency_cols / percent_cols: optional list of column names that hold
     raw numeric values which should be *displayed* with € / % formatting
     while remaining numeric under the hood, so sorting/filtering in the
-    dataframe widget stays numerically correct instead of alphabetical.
-
-    help_cols: optional {column_name: tooltip_text} shown as a (?) on the
-    column header on hover — for composite/non-obvious columns (KVI_Score,
-    GapRatio, AssignmentStat, etc.)."""
-    help_cols = help_cols or {}
+    dataframe widget stays numerically correct instead of alphabetical."""
     column_config = {}
     if currency_cols:
         for col in currency_cols:
             if col in data.columns:
-                column_config[col] = st.column_config.NumberColumn(col, format="€ %,.2f", help=help_cols.get(col))
+                column_config[col] = st.column_config.NumberColumn(col, format="€ %,.2f")
     if percent_cols:
         for col in percent_cols:
             if col in data.columns:
-                column_config[col] = st.column_config.NumberColumn(col, format="%.2f%%", help=help_cols.get(col))
-    for col, text in help_cols.items():
-        if col in data.columns and col not in column_config:
-            column_config[col] = st.column_config.Column(col, help=text)
+                column_config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
     column_config = column_config or None
     try:
         st.dataframe(data, width='stretch', hide_index=hide_index, column_config=column_config)
@@ -1337,14 +1322,7 @@ elif analysis == "Repeat Purchases":
             display_df = table_df[['CustomerId', 'OrderCount', 'AvgGapDays', 'Recency', 'GapRatio', 'TotalSpend']].copy()
             display_df['AvgGapDays'] = display_df['AvgGapDays'].round(1)
             display_df['GapRatio'] = display_df['GapRatio'].round(2)
-            show_df(
-                display_df, currency_cols=['TotalSpend'],
-                help_cols={
-                    'AvgGapDays': "The median gap between this customer's past orders — their own normal rhythm.",
-                    'Recency': "Days since this customer's last order.",
-                    'GapRatio': "Recency ÷ AvgGapDays — how many of their normal ordering cycles have passed since we last saw them.",
-                }
-            )
+            show_df(display_df, currency_cols=['TotalSpend'])
 
             # ── Drill-down: what did this customer used to buy? ────────────────
             st.markdown("**Drill-down — what did they used to buy?**")
@@ -1509,23 +1487,15 @@ elif analysis == "Basket Segmentation":
         """Draw the 4 metric cards, labelled according to the active mode."""
         c1, c2, c3, c4 = st.columns(4)
         if is_group_mode:
-            with c1: metric_card("Group Customers", str(info["customers_any"]),
-                                  help="Customers who've bought any of this group's products, at any time — not necessarily together.")
-            with c2: metric_card("Orders Touching Group", str(info["invoice_count"]),
-                                  help="Distinct invoices containing at least one of this group's products.")
-            with c3: metric_card("Group Revenue", fmt_currency(info["total_rev"]),
-                                  help="Total revenue from lines matching this group's products, anywhere in the customer's history.")
-            with c4: metric_card("Group Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—",
-                                  help="Total margin from lines matching this group's products, anywhere in the customer's history.")
+            with c1: metric_card("Group Customers", str(info["customers_any"]))
+            with c2: metric_card("Orders Touching Group", str(info["invoice_count"]))
+            with c3: metric_card("Group Revenue", fmt_currency(info["total_rev"]))
+            with c4: metric_card("Group Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
         else:
-            with c1: metric_card("Basket Customers", str(info["customers_all"]),
-                                  help="Customers who bought every product in this basket together on the same invoice.")
-            with c2: metric_card("Buy Any Product", str(info["customers_any"]),
-                                  help="Customers who bought at least one of this basket's products, whether or not they bought the full basket together.")
-            with c3: metric_card("Basket Revenue", fmt_currency(info["total_rev"]),
-                                  help="Revenue from this basket's products, within invoices where the full basket appears together.")
-            with c4: metric_card("Basket Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—",
-                                  help="Margin from this basket's products, within invoices where the full basket appears together.")
+            with c1: metric_card("Basket Customers", str(info["customers_all"]))
+            with c2: metric_card("Buy Any Product", str(info["customers_any"]))
+            with c3: metric_card("Basket Revenue", fmt_currency(info["total_rev"]))
+            with c4: metric_card("Basket Margin", fmt_currency(info["total_mar"]) if info["total_mar"] is not None else "—")
 
     # ── Auto-suggest baskets from co-occurrence ────────────────────────────
     st.markdown('<div class="section-header" style="font-size:1.1rem">Step 1 — Auto-suggested Baskets</div>', unsafe_allow_html=True)
@@ -1875,12 +1845,9 @@ elif analysis == "Basket Segmentation":
 
         c1, c2, c3 = st.columns(3)
         assigned_n = (assignment_df['AssignedBasket'].isin(st.session_state['defined_baskets'])).sum()
-        with c1: metric_card("Assigned customers", str(assigned_n),
-                              help="Customers whose top-scoring basket cleared the assignment threshold, and were assigned to that basket.")
-        with c2: metric_card("Unclassified", str((assignment_df['AssignedBasket'] == 'Unclassified').sum()),
-                              help="Customers who couldn't be scored at all — typically no order activity under the current filters.")
-        with c3: metric_card("No Segmentation", str((assignment_df['AssignedBasket'] == 'No Segmentation').sum()),
-                              help="Customers who didn't clear the assignment threshold for any defined basket.")
+        with c1: metric_card("Assigned customers", str(assigned_n))
+        with c2: metric_card("Unclassified", str((assignment_df['AssignedBasket'] == 'Unclassified').sum()))
+        with c3: metric_card("No Segmentation", str((assignment_df['AssignedBasket'] == 'No Segmentation').sum()))
 
         show_df(summary, currency_cols=['TotalSpend'])
 
@@ -1903,13 +1870,7 @@ elif analysis == "Basket Segmentation":
             table_currency_cols.append('AssignmentStat')
         elif assign_metric_used == "Revenue Share of Customer Spend":
             table_percent_cols.append('AssignmentStat')
-        show_df(
-            assignment_df, currency_cols=table_currency_cols, percent_cols=table_percent_cols,
-            help_cols={
-                'AssignedBasket': "The basket this customer scored highest on, or 'No Segmentation' if they didn't clear the threshold for any basket.",
-                'AssignmentStat': f"This customer's {assign_metric_used} value for their assigned basket — the number that was compared against the threshold.",
-            }
-        )
+        show_df(assignment_df, currency_cols=table_currency_cols, percent_cols=table_percent_cols)
 
         # ── Confirm to use in KVI ──────────────────────────────────────────
         st.markdown("---")
@@ -2244,16 +2205,11 @@ elif analysis == "Basket Exploration":
         baskets_revenue_pct = baskets_revenue / total_revenue if total_revenue > 0 else 0
 
         c1, c2, c3, c4, c5 = st.columns(5)
-        with c1: metric_card("Baskets shown", str(len(exp_df)),
-                              help="Number of basket combinations currently displayed, after the Top N cap and any no-overlap filtering.")
-        with c2: metric_card("Unique customers covered", f"{len(covered_customers):,}",
-                              help="Customers who bought at least one of the baskets shown here in full.")
-        with c3: metric_card("% of total customers", f"{coverage_pct:.1%}",
-                              help="Covered customers as a share of every customer in the current filtered data.")
-        with c4: metric_card("% of revenue (these customers)", f"{covered_customer_revenue_pct:.1%}",
-                              help="Full wallet share (any product, not just the baskets shown) of everyone who touches at least one basket shown here.")
-        with c5: metric_card("% of revenue (these baskets)", f"{baskets_revenue_pct:.1%}",
-                              help="Revenue from just the basket-specific product lines within qualifying orders — a smaller, more specific slice than the customers' full wallet.")
+        with c1: metric_card("Baskets shown", str(len(exp_df)))
+        with c2: metric_card("Unique customers covered", f"{len(covered_customers):,}")
+        with c3: metric_card("% of total customers", f"{coverage_pct:.1%}")
+        with c4: metric_card("% of revenue (these customers)", f"{covered_customer_revenue_pct:.1%}")
+        with c5: metric_card("% of revenue (these baskets)", f"{baskets_revenue_pct:.1%}")
         st.caption(
             "\"These customers\" is the full wallet share (any product) of everyone who touches "
             "at least one basket shown. \"These baskets\" is revenue from just the basket products "
@@ -3091,15 +3047,11 @@ elif analysis == "KVI Classification":
 
     st.markdown(f"**Scope: {scope_label}** — {len(kvi_df):,} products analysed")
     c1, c2, c3, c4 = st.columns(4)
-    with c1: metric_card("KVI Products", str(n_kvi),
-                          help="Products whose composite KVI Score (blending demand, revenue, customer reach, and co-purchase affinity) is at or above the KVI score threshold.")
-    with c2: metric_card("Core Products", str(n_core),
-                          help="Non-KVI products whose purchase count is above the Core percentile threshold — meaningfully popular, but not top-tier.")
-    with c3: metric_card("Slow Movers", str(n_slow),
-                          help="Products that are neither KVI nor Core — comparatively low demand, revenue, and reach.")
+    with c1: metric_card("KVI Products",    str(n_kvi))
+    with c2: metric_card("Core Products",   str(n_core))
+    with c3: metric_card("Slow Movers",     str(n_slow))
     with c4: metric_card("KVI Revenue Share",
-                          f"{kvi_df[kvi_df['Category']=='KVI']['Revenue'].sum() / kvi_df['Revenue'].sum():.1%}",
-                          help="Share of total revenue in scope that comes from KVI-classified products alone.")
+                          f"{kvi_df[kvi_df['Category']=='KVI']['Revenue'].sum() / kvi_df['Revenue'].sum():.1%}")
 
     tab1, tab2, tab3, tab4 = st.tabs(["KVI", "Core", "Slow Movers", "Score Breakdown"])
 
@@ -3119,15 +3071,7 @@ elif analysis == "KVI Classification":
                      'UniqueCustomers_Proportion', 'Corr_Score', 'KVI_Score']],
                 fdf_raw
             ),
-            currency_cols=['Price', 'Revenue'],
-            help_cols={
-                'PurchaseCount': "Number of individual order lines that include this product.",
-                'Demand_Proportion': "This product's share of total units sold, among all products in scope.",
-                'Revenue_Proportion': "This product's share of total revenue, among all products in scope.",
-                'UniqueCustomers_Proportion': "This product's share of all customers in scope who bought it.",
-                'Corr_Score': "How strongly this product tends to be bought alongside other frequently-purchased products — higher means it's a common 'anchor' item.",
-                'KVI_Score': "Composite score blending demand, revenue, customer reach, and Corr_Score, used to classify KVI/Core/Slow Mover.",
-            }
+            currency_cols=['Price', 'Revenue']
         )
 
     with tab1:
