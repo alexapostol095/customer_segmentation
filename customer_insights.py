@@ -611,6 +611,24 @@ def get_sidebar_options(df):
 
 filter_cat_cols, col_vals, all_customers, min_date, max_date, n_rows, n_customers = get_sidebar_options(df_raw)
 
+@st.cache_data(show_spinner=False)
+def get_product_search_options(df):
+    """Labels for the sidebar product quick-jump box: 'ID — Name' where a
+    name is available, else just the ID. Returns (sorted labels, label->id map)."""
+    name_col = get_product_name_col(df)
+    prods = df[['ProductId']].drop_duplicates().copy()
+    if name_col is not None:
+        name_map = df.drop_duplicates('ProductId').set_index('ProductId')[name_col]
+        prods['Label'] = prods['ProductId'].map(
+            lambda p: f"{p} — {name_map.get(p)}" if pd.notna(name_map.get(p)) and name_map.get(p) else str(p)
+        )
+    else:
+        prods['Label'] = prods['ProductId'].astype(str)
+    label_to_id = dict(zip(prods['Label'], prods['ProductId']))
+    return sorted(prods['Label'].tolist()), label_to_id
+
+product_search_labels, product_search_label_to_id = get_product_search_options(df_raw)
+
 # ── Product aggregation (roll rows up to a chosen column, in place of ProductId) ─
 @st.cache_data(show_spinner=False)
 def aggregate_by_column(df_in, group_col):
@@ -679,6 +697,17 @@ with st.sidebar:
         "KVI Classification",
         "Pricing Simulation",
     ])
+
+    st.markdown("---")
+    st.markdown("**Quick Jump**")
+    jump_customer_choice = st.selectbox(
+        "🔍 Jump to customer", ["— None —"] + all_customers, key="quick_jump_customer",
+        help="Skip straight to a summary for this customer, regardless of which analysis view is selected above."
+    )
+    jump_product_choice = st.selectbox(
+        "🔍 Jump to product", ["— None —"] + product_search_labels, key="quick_jump_product",
+        help="Skip straight to a summary for this product, regardless of which analysis view is selected above."
+    )
 
     st.markdown("---")
     st.markdown("**Product Grouping**")
@@ -807,9 +836,135 @@ rfm, prod_repeat = compute_base(fdf, _fdf_fp)
 cat_cols = get_cat_cols(fdf, _fdf_fp)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# QUICK JUMP — sidebar search shortcut, takes precedence over the selected
+# analysis view when active
+# ══════════════════════════════════════════════════════════════════════════════
+def render_customer_quick_view(cust_id, fdf, cat_cols):
+    st.markdown(f'<div class="section-header">Quick Jump — Customer {cust_id}</div>', unsafe_allow_html=True)
+    cdf = fdf[fdf['CustomerId'] == cust_id]
+    if cdf.empty:
+        st.info("No activity for this customer under the current filters.")
+        return
+
+    total_spend = cdf['LineRevenue'].sum()
+    n_orders = cdf['InvoiceId'].nunique()
+    n_products = cdf['ProductId'].nunique()
+    last_order = cdf['CreatedDate'].max()
+    recency_days = (fdf['CreatedDate'].max() - last_order).days
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: metric_card("Total Spend", fmt_currency(total_spend))
+    with c2: metric_card("Orders", str(n_orders))
+    with c3: metric_card("Products Bought", str(n_products))
+    with c4: metric_card("Days Since Last Order", str(recency_days))
+
+    if 'confirmed_specialty' in st.session_state:
+        labels = st.session_state['confirmed_specialty']['labels']
+        label_col = 'Specialty' if 'Specialty' in labels.columns else 'Customer Cluster'
+        match = labels[labels['CustomerId'].astype(str) == str(cust_id)]
+        if not match.empty:
+            st.caption(f"Confirmed segment: **{match.iloc[0][label_col]}**")
+
+    st.markdown("")
+    st.markdown("**Top products purchased**")
+    top_prods = (
+        cdf.groupby('ProductId')
+        .agg(Quantity=('Quantity', 'sum'), Revenue=('LineRevenue', 'sum'), Orders=('InvoiceId', 'nunique'))
+        .sort_values('Revenue', ascending=False)
+        .head(10)
+        .reset_index()
+    )
+    show_df(enrich_with_product_name(top_prods, fdf), currency_cols=['Revenue'])
+
+    if cat_cols:
+        top_cat_col = 'MainGroup' if 'MainGroup' in cat_cols else cat_cols[0]
+        cat_spend = cdf.groupby(top_cat_col)['LineRevenue'].sum().sort_values(ascending=False)
+        cat_share = cat_spend / cat_spend.sum()
+        st.markdown(f"**Spend by {top_cat_col}**")
+        cat_display = pd.DataFrame({
+            top_cat_col: cat_spend.index,
+            'Spend': cat_spend.values,
+            'Share': cat_share.map('{:.1%}'.format).values,
+        })
+        show_df(cat_display, currency_cols=['Spend'])
+
+    st.markdown("**Recent orders**")
+    recent = (
+        cdf.groupby('InvoiceId')
+        .agg(Date=('CreatedDate', 'max'), Revenue=('LineRevenue', 'sum'), Lines=('ProductId', 'count'))
+        .sort_values('Date', ascending=False)
+        .head(10)
+        .reset_index()
+    )
+    recent['Date'] = recent['Date'].dt.date.astype(str)
+    show_df(recent, currency_cols=['Revenue'])
+
+def render_product_quick_view(pid, fdf):
+    st.markdown(f'<div class="section-header">Quick Jump — Product {pid}</div>', unsafe_allow_html=True)
+    pdf_ = fdf[fdf['ProductId'].astype(str) == str(pid)]
+    if pdf_.empty:
+        st.info("No activity for this product under the current filters.")
+        return
+
+    name_col = get_product_name_col(fdf)
+    if name_col is not None:
+        nm = pdf_[name_col].iloc[0]
+        if pd.notna(nm) and nm:
+            st.caption(f"**{nm}**")
+
+    total_rev = pdf_['LineRevenue'].sum()
+    total_qty = pdf_['Quantity'].sum()
+    n_custs = pdf_['CustomerId'].nunique()
+    avg_price = pdf_['PricePerUnit'].mean()
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: metric_card("Total Revenue", fmt_currency(total_rev))
+    with c2: metric_card("Total Quantity Sold", f"{total_qty:,.0f}")
+    with c3: metric_card("Unique Customers", str(n_custs))
+    with c4: metric_card("Avg Price", fmt_currency(avg_price))
+
+    st.markdown("")
+    st.markdown("**Top customers buying this product**")
+    top_custs = (
+        pdf_.groupby('CustomerId')
+        .agg(Quantity=('Quantity', 'sum'), Revenue=('LineRevenue', 'sum'), Orders=('InvoiceId', 'nunique'))
+        .sort_values('Revenue', ascending=False)
+        .head(10)
+        .reset_index()
+    )
+    show_df(top_custs, currency_cols=['Revenue'])
+
+    st.markdown("**Revenue over time**")
+    monthly = pdf_.set_index('CreatedDate').resample('ME')['LineRevenue'].sum().reset_index()
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.plot(monthly['CreatedDate'], monthly['LineRevenue'], color=PALETTE[0], linewidth=2)
+    ax.fill_between(monthly['CreatedDate'], monthly['LineRevenue'], alpha=0.15, color=PALETTE[0])
+    ax.set_ylabel("Revenue (€)", fontsize=9)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
+    ax.tick_params(labelsize=8)
+    ax.spines[['top', 'right']].set_visible(False)
+    fig.tight_layout()
+    st.pyplot(fig); plt.close()
+
+_jump_customer = jump_customer_choice if jump_customer_choice != "— None —" else None
+_jump_product = (
+    product_search_label_to_id[jump_product_choice] if jump_product_choice != "— None —" else None
+)
+_jump_active = bool(_jump_customer or _jump_product)
+
+if _jump_active:
+    st.caption("Showing Quick Jump — change the search boxes to '— None —' in the sidebar to return to the selected analysis view.")
+    if _jump_customer:
+        render_customer_quick_view(_jump_customer, fdf, cat_cols)
+    if _jump_customer and _jump_product:
+        st.markdown("---")
+    if _jump_product:
+        render_product_quick_view(_jump_product, fdf)
+
+# ══════════════════════════════════════════════════════════════════════════════
 # VIEW 1 — OVERVIEW
 # ══════════════════════════════════════════════════════════════════════════════
-if analysis == "Overview":
+elif analysis == "Overview":
     st.markdown('<div class="section-header">Overview</div>', unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
