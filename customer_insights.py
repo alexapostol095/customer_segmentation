@@ -1291,6 +1291,8 @@ elif analysis == "Repeat Purchases":
 
     with tab1:
         min_orders = st.slider("Min order count to be 'repeat'", 2, 100, 2)
+        qualifying_pairs = prod_repeat[prod_repeat['OrderCount'] >= min_orders][['CustomerId', 'ProductId']]
+
         top_repeat = (
             prod_repeat[prod_repeat['OrderCount'] >= min_orders]
             .groupby('ProductId')
@@ -1303,8 +1305,32 @@ elif analysis == "Repeat Purchases":
             .sort_values('RepeatCustomers', ascending=False)
             .reset_index()
         )
+
+        # Real repeat rate: repeat customers as a share of *everyone* who's
+        # ever bought this product, not just a raw repeat-customer count.
+        all_buyers_by_product = fdf.groupby('ProductId')['CustomerId'].nunique().rename('TotalBuyers')
+        top_repeat = top_repeat.merge(all_buyers_by_product, on='ProductId', how='left')
+        top_repeat['RepeatRate'] = (top_repeat['RepeatCustomers'] / top_repeat['TotalBuyers']) * 100
+
+        currency_cols_tp = ['TotalSpend']
+        has_margin_tp = 'TotalCostPerUnit' in fdf.columns
+        if has_margin_tp:
+            # Margin from the same qualifying (customer, product) pairs, over
+            # each customer's full historical spend on that product — matching
+            # how TotalSpend above is already scoped.
+            fdf_margin_tp = fdf.assign(LineMargin=(fdf['PricePerUnit'] - fdf['TotalCostPerUnit']) * fdf['Quantity'])
+            margin_by_product = (
+                fdf_margin_tp.merge(qualifying_pairs, on=['CustomerId', 'ProductId'])
+                .groupby('ProductId')['LineMargin'].sum().rename('TotalMargin')
+            )
+            top_repeat = top_repeat.merge(margin_by_product, on='ProductId', how='left')
+            currency_cols_tp.append('TotalMargin')
+
         top_repeat['AvgOrderCount'] = top_repeat['AvgOrderCount'].map('{:.1f}'.format)
-        show_df(enrich_with_product_name(top_repeat, fdf), currency_cols=['TotalSpend'])
+        show_df(
+            enrich_with_product_name(top_repeat, fdf),
+            currency_cols=currency_cols_tp, percent_cols=['RepeatRate']
+        )
 
     with tab2:
         rp_col = st.selectbox(
@@ -1313,10 +1339,15 @@ elif analysis == "Repeat Purchases":
             key="rp_col"
         )
         order_counts_df = (
-            fdf.groupby(['CustomerId', 'ProductId', rp_col])['InvoiceId']
-            .nunique().reset_index().rename(columns={'InvoiceId': 'OrderCount'})
+            fdf.groupby(['CustomerId', 'ProductId', rp_col])
+            .agg(OrderCount=('InvoiceId', 'nunique'), Revenue=('LineRevenue', 'sum'))
+            .reset_index()
         )
         order_counts_df['IsRepeat'] = order_counts_df['OrderCount'] > 1
+        # Revenue attributable to repeat customer-product pairs, so the revenue-
+        # weighted rate below can be computed with a plain sum (not a lambda
+        # inside .agg(), which can't see other columns at the same time).
+        order_counts_df['RepeatRevenue'] = np.where(order_counts_df['IsRepeat'], order_counts_df['Revenue'], 0.0)
 
         repeat_grp = (
             order_counts_df.groupby(rp_col)
@@ -1324,18 +1355,34 @@ elif analysis == "Repeat Purchases":
                 TotalCustomerProducts=('ProductId',  'count'),
                 RepeatCount          =('IsRepeat',   'sum'),
                 AvgOrderCount        =('OrderCount', 'mean'),
+                TotalRevenue         =('Revenue', 'sum'),
+                RepeatRevenue        =('RepeatRevenue', 'sum'),
             )
-            .assign(RepeatRate=lambda x: x['RepeatCount'] / x['TotalCustomerProducts'])
+            .assign(
+                RepeatRate=lambda x: (x['RepeatCount'] / x['TotalCustomerProducts']) * 100,
+                RevenueWeightedRepeatRate=lambda x: (x['RepeatRevenue'] / x['TotalRevenue']) * 100,
+            )
             .sort_values('RepeatRate', ascending=False)
             .reset_index()
         )
-        repeat_grp['RepeatRate']    = repeat_grp['RepeatRate'].map('{:.1%}'.format)
         repeat_grp['AvgOrderCount'] = repeat_grp['AvgOrderCount'].map('{:.1f}'.format)
 
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown(f"**Repeat rate by {rp_col}**")
-            show_df(repeat_grp)
+            st.caption(
+                "RepeatRate treats every customer-product pair equally. "
+                "RevenueWeightedRepeatRate is the share of this category's revenue "
+                "that comes from repeat customer-product pairs — a category can have "
+                "a low pair-count rate but still get most of its revenue from repeats "
+                "if the repeat pairs are the high-spend ones, or vice versa."
+            )
+            show_df(
+                repeat_grp[[rp_col, 'TotalCustomerProducts', 'RepeatCount', 'AvgOrderCount',
+                            'TotalRevenue', 'RepeatRevenue', 'RepeatRate', 'RevenueWeightedRepeatRate']],
+                currency_cols=['TotalRevenue', 'RepeatRevenue'],
+                percent_cols=['RepeatRate', 'RevenueWeightedRepeatRate']
+            )
         with col2:
             repeat_grp2 = (
                 order_counts_df.groupby(rp_col)
