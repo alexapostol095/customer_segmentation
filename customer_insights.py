@@ -1010,6 +1010,108 @@ elif analysis == "Overview":
         fig.tight_layout()
         st.pyplot(fig); plt.close()
 
+    st.markdown('<div class="section-header" style="font-size:1.1rem">New vs. Returning Customer Revenue</div>', unsafe_allow_html=True)
+    st.caption(
+        "\"New\" is a customer's very first order ever (based on their full order history, not just the current filters). "
+        "Everything after that counts as \"Returning\"."
+    )
+    first_order_global = df_raw.groupby('CustomerId')['CreatedDate'].min().rename('FirstOrderDate')
+    fdf_nr = fdf.merge(first_order_global, on='CustomerId', how='left')
+    fdf_nr['CustomerType'] = np.where(fdf_nr['CreatedDate'] <= fdf_nr['FirstOrderDate'], 'New', 'Returning')
+
+    monthly_nr = (
+        fdf_nr.set_index('CreatedDate')
+        .groupby([pd.Grouper(freq='ME'), 'CustomerType'])['LineRevenue']
+        .sum()
+        .unstack(fill_value=0)
+        .reindex(columns=['New', 'Returning'], fill_value=0)
+    )
+    if monthly_nr.empty:
+        st.info("Not enough data to break revenue down by month.")
+    else:
+        fig, ax = plt.subplots(figsize=(11, 3.5))
+        ax.stackplot(
+            monthly_nr.index, monthly_nr['New'], monthly_nr['Returning'],
+            labels=['New', 'Returning'], colors=[PALETTE[0], PALETTE[1]], alpha=0.85
+        )
+        ax.set_ylabel("Revenue (€)", fontsize=9)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
+        ax.tick_params(labelsize=8)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.legend(fontsize=8, loc='upper left')
+        fig.tight_layout()
+        st.pyplot(fig); plt.close()
+
+    st.markdown('<div class="section-header" style="font-size:1.1rem">Biggest Movers</div>', unsafe_allow_html=True)
+    ov_date_min = fdf['CreatedDate'].min()
+    ov_date_max = fdf['CreatedDate'].max()
+    ov_midpoint = ov_date_min + (ov_date_max - ov_date_min) / 2
+
+    if (ov_date_max - ov_date_min).days < 14:
+        st.info("The current date range is too short to compare movers meaningfully — widen the date filter to see this.")
+    else:
+        st.caption(f"Comparing the first half ({ov_date_min.date()} – {ov_midpoint.date()}) vs. the second half ({ov_midpoint.date()} – {ov_date_max.date()}) of the currently filtered date range.")
+        half1 = fdf[fdf['CreatedDate'] <= ov_midpoint]
+        half2 = fdf[fdf['CreatedDate'] > ov_midpoint]
+
+        def _biggest_movers(df1, df2, group_col):
+            rev1 = df1.groupby(group_col)['LineRevenue'].sum()
+            rev2 = df2.groupby(group_col)['LineRevenue'].sum()
+            movers = pd.DataFrame({'Half1': rev1, 'Half2': rev2}).fillna(0)
+            movers['Delta'] = movers['Half2'] - movers['Half1']
+            return movers.sort_values('Delta', ascending=False)
+
+        cat_movers = _biggest_movers(half1, half2, group_col_ov)
+        cust_movers = _biggest_movers(half1, half2, 'CustomerId')
+
+        c1, c2, c3, c4 = st.columns(4)
+        if not cat_movers.empty:
+            with c1: metric_card(f"Biggest {group_col_ov} Gain", str(cat_movers.index[0]), fmt_currency(cat_movers['Delta'].iloc[0]))
+            with c2: metric_card(f"Biggest {group_col_ov} Decline", str(cat_movers.index[-1]), fmt_currency(cat_movers['Delta'].iloc[-1]))
+        if not cust_movers.empty:
+            with c3: metric_card("Biggest Customer Gain", str(cust_movers.index[0]), fmt_currency(cust_movers['Delta'].iloc[0]))
+            with c4: metric_card("Biggest Customer Decline", str(cust_movers.index[-1]), fmt_currency(cust_movers['Delta'].iloc[-1]))
+
+        st.markdown(f"**Top movers by {group_col_ov}**")
+        cat_display = cat_movers.reset_index().rename(columns={group_col_ov: group_col_ov})
+        top_movers_display = pd.concat([cat_display.head(5), cat_display.tail(5)]).drop_duplicates()
+        show_df(top_movers_display, currency_cols=['Half1', 'Half2', 'Delta'])
+
+    st.markdown('<div class="section-header" style="font-size:1.1rem">Customer Concentration</div>', unsafe_allow_html=True)
+    cust_rev_sorted = fdf.groupby('CustomerId')['LineRevenue'].sum().sort_values(ascending=False)
+    if len(cust_rev_sorted) == 0 or cust_rev_sorted.sum() == 0:
+        st.info("Not enough customer revenue data to compute concentration.")
+    else:
+        cum_rev_pct = cust_rev_sorted.cumsum() / cust_rev_sorted.sum()
+        cum_cust_pct = np.arange(1, len(cust_rev_sorted) + 1) / len(cust_rev_sorted)
+
+        top10_n = max(1, int(np.ceil(len(cust_rev_sorted) * 0.10)))
+        top10_share = cust_rev_sorted.head(top10_n).sum() / cust_rev_sorted.sum()
+
+        col_e, col_f = st.columns([2, 1])
+        with col_e:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.plot([0, 1], [0, 1], color='#7a8099', linewidth=1, linestyle='--', label='Perfectly even')
+            ax.plot(np.insert(cum_cust_pct, 0, 0), np.insert(cum_rev_pct.values, 0, 0), color=PALETTE[3], linewidth=2, label='Actual')
+            ax.fill_between(np.insert(cum_cust_pct, 0, 0), np.insert(cum_rev_pct.values, 0, 0), alpha=0.1, color=PALETTE[3])
+            ax.set_xlabel("Cumulative % of customers (ranked by spend)", fontsize=9)
+            ax.set_ylabel("Cumulative % of revenue", fontsize=9)
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0%}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0%}'))
+            ax.tick_params(labelsize=8)
+            ax.spines[['top', 'right']].set_visible(False)
+            ax.legend(fontsize=8, loc='lower right')
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
+        with col_f:
+            metric_card("Top 10% of Customers", f"{top10_share:.1%} of revenue", f"{top10_n:,} customers")
+            st.caption(
+                "How dependent this business is on its top accounts. The closer the actual "
+                "line hugs the diagonal, the more evenly spread revenue is across the "
+                "customer base; the further it bows toward the bottom-right corner, the "
+                "more concentrated it is in a small number of accounts."
+            )
+
     st.markdown('<div class="section-header" style="font-size:1.1rem">Customer Value Distribution</div>', unsafe_allow_html=True)
     col_c, col_d = st.columns(2)
     with col_c:
