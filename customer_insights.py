@@ -1029,18 +1029,35 @@ elif analysis == "Overview":
     if monthly_nr.empty:
         st.info("Not enough data to break revenue down by month.")
     else:
-        fig, ax = plt.subplots(figsize=(11, 3.5))
-        ax.stackplot(
-            monthly_nr.index, monthly_nr['New'], monthly_nr['Returning'],
-            labels=['New', 'Returning'], colors=[PALETTE[0], PALETTE[1]], alpha=0.85
+        import plotly.graph_objects as go
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=monthly_nr.index, y=monthly_nr['New'],
+            name='New', mode='lines', stackgroup='one',
+            line=dict(width=0.5, color=PALETTE[0]),
+            fillcolor=PALETTE[0],
+            hovertemplate='%{x|%b %Y}<br>New: €%{y:,.0f}<extra></extra>',
+        ))
+        fig.add_trace(go.Scatter(
+            x=monthly_nr.index, y=monthly_nr['Returning'],
+            name='Returning', mode='lines', stackgroup='one',
+            line=dict(width=0.5, color=PALETTE[1]),
+            fillcolor=PALETTE[1],
+            hovertemplate='%{x|%b %Y}<br>Returning: €%{y:,.0f}<extra></extra>',
+        ))
+        fig.update_layout(
+            paper_bgcolor='#151720',
+            plot_bgcolor='#151720',
+            font=dict(color='#d4cfc7', size=11),
+            xaxis=dict(title=None, gridcolor='#2e3246', zerolinecolor='#2e3246'),
+            yaxis=dict(title="Revenue (€)", gridcolor='#2e3246', zerolinecolor='#2e3246', tickformat=',.0f', tickprefix='€'),
+            hoverlabel=dict(bgcolor='#1c1f2b', bordercolor='#e8c97e', font=dict(color='#f0ece3', size=12)),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+            height=350,
+            margin=dict(l=60, r=30, t=30, b=40),
         )
-        ax.set_ylabel("Revenue (€)", fontsize=9)
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
-        ax.tick_params(labelsize=8)
-        ax.spines[['top', 'right']].set_visible(False)
-        ax.legend(fontsize=8, loc='upper left')
-        fig.tight_layout()
-        st.pyplot(fig); plt.close()
+        show_chart(fig)
 
     st.markdown('<div class="section-header" style="font-size:1.1rem">Biggest Movers</div>', unsafe_allow_html=True)
     ov_date_min = fdf['CreatedDate'].min()
