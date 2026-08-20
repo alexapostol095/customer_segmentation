@@ -2758,10 +2758,31 @@ elif analysis == "Customer Specialty":
         axis=1
     )
 
+    # ── Threshold sensitivity ────────────────────────────────────────────────
+    # SpecialtyShare itself doesn't depend on the threshold, so we can check
+    # how many customers sit right on the edge without recomputing anything --
+    # just count who'd flip if the slider moved by one step in either direction.
+    _thresh_step = 0.05
+    _would_gain = ((specialty_df['SpecialtyShare'] >= threshold - _thresh_step) & (specialty_df['SpecialtyShare'] < threshold)).sum()
+    _would_lose = ((specialty_df['SpecialtyShare'] >= threshold) & (specialty_df['SpecialtyShare'] < threshold + _thresh_step)).sum()
+    st.caption(
+        f"At this threshold: lowering it by 5 points would add **{_would_gain}** more specialist(s); "
+        f"raising it by 5 points would drop **{_would_lose}** current specialist(s) to Generalist."
+    )
+
     # Merge in order/recency info
     specialty_df = specialty_df.merge(
         rfm[['CustomerId', 'Recency', 'Frequency']], on='CustomerId', how='left'
     )
+
+    has_margin_cs = 'TotalCostPerUnit' in fdf.columns
+    if has_margin_cs:
+        # Each customer's total margin across all categories, mirroring how
+        # TotalSpend above is already their whole spend, not just spend in
+        # their specialty category.
+        fdf_margin_cs = fdf.assign(LineMargin=(fdf['PricePerUnit'] - fdf['TotalCostPerUnit']) * fdf['Quantity'])
+        cust_margin_cs = fdf_margin_cs.groupby('CustomerId')['LineMargin'].sum().rename('TotalMargin')
+        specialty_df = specialty_df.merge(cust_margin_cs, on='CustomerId', how='left')
 
     n_specialists  = (specialty_df['Specialty'] != 'Generalist').sum()
     n_generalists  = (specialty_df['Specialty'] == 'Generalist').sum()
@@ -2780,16 +2801,20 @@ elif analysis == "Customer Specialty":
     tab1, tab2, tab3 = st.tabs(["Specialty Overview", "Customer List", "Drill-down"])
 
     with tab1:
+        agg_dict_cs = dict(
+            Customers    =('CustomerId',      'count'),
+            TotalSpend   =('TotalSpend',      'sum'),
+            AvgSpend     =('TotalSpend',      'mean'),
+            AvgShare     =('SpecialtyShare',  'mean'),
+            AvgRecency   =('Recency',         'mean'),
+            AvgFrequency =('Frequency',       'mean'),
+        )
+        if has_margin_cs:
+            agg_dict_cs['Margin'] = ('TotalMargin', 'sum')
+
         specialty_summary = (
             specialty_df.groupby('Specialty')
-            .agg(
-                Customers    =('CustomerId',      'count'),
-                TotalSpend   =('TotalSpend',      'sum'),
-                AvgSpend     =('TotalSpend',      'mean'),
-                AvgShare     =('SpecialtyShare',  'mean'),
-                AvgRecency   =('Recency',         'mean'),
-                AvgFrequency =('Frequency',       'mean'),
-            )
+            .agg(**agg_dict_cs)
             .sort_values('TotalSpend', ascending=False)
             .reset_index()
         )
@@ -2799,7 +2824,11 @@ elif analysis == "Customer Specialty":
         display_summary['AvgShare']     = display_summary['AvgShare'].map('{:.1%}'.format)
         display_summary['AvgRecency']   = display_summary['AvgRecency'].map('{:.0f} days'.format)
         display_summary['AvgFrequency'] = display_summary['AvgFrequency'].map('{:.1f}'.format)
-        show_df(display_summary, currency_cols=['TotalSpend', 'AvgSpend'])
+        currency_cols_cs = ['TotalSpend', 'AvgSpend']
+        if has_margin_cs:
+            display_summary['MarginPct'] = (display_summary['Margin'] / display_summary['TotalSpend']).map('{:.1%}'.format)
+            currency_cols_cs.append('Margin')
+        show_df(display_summary, currency_cols=currency_cols_cs)
 
         st.markdown("")
         col_a, col_b = st.columns(2)
