@@ -3521,6 +3521,75 @@ elif analysis == "Glossary":
     st.markdown('<div class="section-header">Glossary</div>', unsafe_allow_html=True)
     st.markdown("Plain-language definitions for the terms used throughout this app.")
 
+    st.markdown('<div class="section-header" style="font-size:1.15rem">How segmentation and basket assignment fit together</div>', unsafe_allow_html=True)
+    st.markdown(
+        "There are two independent ways to group customers into a segment in this app, "
+        "and either one can then be fed into KVI Classification. Here's the full path "
+        "the data takes, end to end."
+    )
+
+    with st.expander("Path 1 — Customer Specialty (spend-based segmentation)", expanded=False):
+        st.markdown(
+            "1. **Customer Specialty** computes each customer's dominant spend category "
+            "(MainGroup, SubGroup, or whichever column you pick) and how concentrated "
+            "their spend is in it.\n"
+            "2. Customers whose spend share in their top category clears the **specialist "
+            "threshold** are labeled with that category as their Specialty; everyone else "
+            "is a **Generalist**.\n"
+            "3. On the Customer List tab, ticking **'Use this segmentation for KVI "
+            "Classification'** confirms it — this becomes the app's active Customer "
+            "Cluster.\n"
+            "4. Once confirmed, KVI Classification can run separately on each specialty "
+            "group (or one specific one), scoping which customers' order lines it "
+            "analyzes."
+        )
+
+    with st.expander("Path 2 — Basket Segmentation (co-purchase based segmentation)", expanded=False):
+        st.markdown(
+            "1. **Basket Exploration** discovers which products are frequently bought "
+            "together, ranked by frequency, revenue, or customers reached — and lets you "
+            "export any discovered combination straight into Basket Segmentation as a "
+            "defined basket.\n"
+            "2. In **Basket Segmentation**, you can also start from an auto-suggested "
+            "basket (co-occurrence based) or hand-build one by picking products directly.\n"
+            "3. Each basket you save becomes an entry in **Defined baskets** — rename, "
+            "inspect (customer/revenue/margin stats), or remove any of them at any time.\n"
+            "4. You choose a **Definition mode** that applies to every basket at once: "
+            "*Basket mode* (every product must appear together on the same invoice) or "
+            "*Group of items mode* (any of the group's products, at any time, counts).\n"
+            "5. You then pick an **assignment metric** (Invoice Count, Revenue, or Revenue "
+            "Share of Customer Spend) and a threshold. Every customer is scored against "
+            "every defined basket on that metric, and assigned to whichever basket they "
+            "score highest on — as long as they clear the threshold. Customers who don't "
+            "clear it for any basket are labeled **No Segmentation**.\n"
+            "6. Reviewing the results, you can confirm this segmentation too — same "
+            "mechanism as Path 1, it becomes the app's active Customer Cluster (replacing "
+            "whichever was confirmed before, if anything).\n"
+            "7. As with Path 1, once confirmed, KVI Classification can run scoped to one "
+            "specific basket-derived group, or across all of them."
+        )
+
+    with st.expander("Where it all converges — KVI Classification and beyond", expanded=False):
+        st.markdown(
+            "- Whichever segmentation is currently confirmed (Customer Specialty or Basket "
+            "Segmentation) is shown at the top of **KVI Classification**.\n"
+            "- From there you choose to run the KVI logic on: the confirmed segmentation "
+            "(per group), a custom manual filter on any column, or all customers with no "
+            "segmentation at all.\n"
+            "- KVI Classification always uses the **real ProductId**, even if the "
+            "sidebar's 'Aggregate rows by' setting is active elsewhere — a per-product "
+            "breakdown wouldn't make sense on aggregated pseudo-products.\n"
+            "- The output classifies every product in scope into **KVI / Core / Slow "
+            "Mover**, exportable to Excel (one sheet per group, if scoped to a full "
+            "segmentation).\n"
+            "- **Pricing Simulation** can also use 'KVI Classification' as its column "
+            "dimension — effectively re-running the same classification live within the "
+            "simulation's date range, so pricing rules can be set per KVI tier rather "
+            "than per raw category."
+        )
+
+    st.markdown("---")
+
     glossary_entries = [
         # (Category, Term, Definition)
         ("Customer Behavior", "Recency", "How many days it's been since a customer's last order."),
