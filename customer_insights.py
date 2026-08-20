@@ -1912,6 +1912,32 @@ elif analysis == "Basket Segmentation":
     else:
         st.info("No baskets defined yet. Load a suggestion or build one manually above.")
 
+    # ── Overlap check ────────────────────────────────────────────────────────
+    # Baskets sharing products makes "assign each customer to their
+    # highest-scoring basket" ambiguous/tie-sensitive for anyone who buys the
+    # shared product(s) — worth flagging before assignment runs.
+    defined = st.session_state['defined_baskets']
+    if len(defined) >= 2:
+        basket_names_list = list(defined.keys())
+        overlap_pairs = []
+        for i in range(len(basket_names_list)):
+            for j in range(i + 1, len(basket_names_list)):
+                b1, b2 = basket_names_list[i], basket_names_list[j]
+                shared = set(defined[b1]) & set(defined[b2])
+                if shared:
+                    overlap_pairs.append((b1, b2, shared))
+
+        if overlap_pairs:
+            st.warning(
+                f"⚠️ {len(overlap_pairs)} pair(s) of defined baskets share at least one product — "
+                "customers who buy the shared product(s) may be assigned somewhat arbitrarily "
+                "between them (whichever basket happens to score marginally higher), rather than "
+                "cleanly reflecting one archetype or the other."
+            )
+            with st.expander("Show overlapping baskets", expanded=False):
+                for b1, b2, shared in overlap_pairs:
+                    st.markdown(f"- **{b1}** ↔ **{b2}**: {', '.join(sorted(shared))}")
+
     # ── Customer assignment ────────────────────────────────────────────────
     st.markdown("---")
     st.markdown('<div class="section-header" style="font-size:1.1rem">Step 3 — Assign Customers</div>', unsafe_allow_html=True)
