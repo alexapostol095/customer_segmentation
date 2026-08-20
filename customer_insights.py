@@ -1181,19 +1181,70 @@ elif analysis == "Category Breakdown":
     tab1, tab2 = st.tabs(["Summary", "Customer Deep-Dive"])
 
     with tab1:
+        st.markdown("**Category Treemap**")
+        hierarchy_cols = [c for c in ['MainGroup', 'SubGroup', 'SubSubGroup'] if c in cb_df.columns]
+        if not hierarchy_cols:
+            hierarchy_cols = [group_col]
+
+        def _build_treemap_data(df, hierarchy_cols, value_col):
+            ids, labels, parents, values = ["Total"], ["Total"], [""], [df[value_col].sum()]
+            for depth in range(1, len(hierarchy_cols) + 1):
+                cols_so_far = hierarchy_cols[:depth]
+                grouped = df.groupby(cols_so_far)[value_col].sum().reset_index()
+                for _, row in grouped.iterrows():
+                    node_id = " / ".join(str(row[c]) for c in cols_so_far)
+                    label = str(row[cols_so_far[-1]])
+                    parent_id = "Total" if depth == 1 else " / ".join(str(row[c]) for c in cols_so_far[:-1])
+                    ids.append(node_id)
+                    labels.append(label)
+                    parents.append(parent_id)
+                    values.append(row[value_col])
+            return ids, labels, parents, values
+
+        tm_ids, tm_labels, tm_parents, tm_values = _build_treemap_data(cb_df, hierarchy_cols, 'LineRevenue')
+
+        import plotly.graph_objects as go
+        tm_fig = go.Figure(go.Treemap(
+            ids=tm_ids, labels=tm_labels, parents=tm_parents, values=tm_values,
+            branchvalues='total',
+            marker=dict(colors=tm_values, colorscale='YlOrRd', line=dict(color='#151720', width=1)),
+            textinfo='label+value+percent parent',
+            texttemplate='<b>%{label}</b><br>€%{value:,.0f}<br>%{percentParent}',
+            hovertemplate='<b>%{label}</b><br>Revenue: €%{value:,.0f}<br>%{percentParent} of parent<extra></extra>',
+        ))
+        tm_fig.update_layout(
+            paper_bgcolor='#151720', plot_bgcolor='#151720',
+            font=dict(color='#0f1117', size=11),
+            margin=dict(l=10, r=10, t=10, b=10), height=450,
+        )
+        show_chart(tm_fig)
+        st.caption(f"Hierarchy: {' → '.join(hierarchy_cols)}" + (" (no MainGroup/SubGroup/SubSubGroup columns found — showing the selected 'Group by' column instead)" if hierarchy_cols == [group_col] and group_col not in ['MainGroup', 'SubGroup', 'SubSubGroup'] else ""))
+
+        st.markdown("")
+        has_margin_cb = 'TotalCostPerUnit' in cb_df.columns
+        agg_dict_cb = dict(
+            Revenue       =('LineRevenue', 'sum'),
+            Customers     =('CustomerId',  'nunique'),
+            Orders        =('InvoiceId',   'nunique'),
+            AvgOrderValue =('LineRevenue', 'mean'),
+        )
+        cb_df_calc = cb_df
+        if has_margin_cb:
+            cb_df_calc = cb_df.assign(LineMargin=(cb_df['PricePerUnit'] - cb_df['TotalCostPerUnit']) * cb_df['Quantity'])
+            agg_dict_cb['Margin'] = ('LineMargin', 'sum')
+
         grp_summary = (
-            cb_df.groupby(group_col)
-            .agg(
-                Revenue       =('LineRevenue', 'sum'),
-                Customers     =('CustomerId',  'nunique'),
-                Orders        =('InvoiceId',   'nunique'),
-                AvgOrderValue =('LineRevenue', 'mean'),
-            )
+            cb_df_calc.groupby(group_col)
+            .agg(**agg_dict_cb)
             .sort_values('Revenue', ascending=False)
             .reset_index()
         )
         grp_summary['RevenueShare'] = (grp_summary['Revenue'] / grp_summary['Revenue'].sum()).map('{:.1%}'.format)
-        show_df(grp_summary, currency_cols=['Revenue', 'AvgOrderValue'])
+        currency_cols_cb = ['Revenue', 'AvgOrderValue']
+        if has_margin_cb:
+            grp_summary['MarginPct'] = (grp_summary['Margin'] / grp_summary['Revenue']).map('{:.1%}'.format)
+            currency_cols_cb.append('Margin')
+        show_df(grp_summary, currency_cols=currency_cols_cb)
 
     with tab2:
         cust_id = st.selectbox("Select customer", sorted(fdf['CustomerId'].unique().tolist()), key="cb_cust")
@@ -1204,15 +1255,31 @@ elif analysis == "Category Breakdown":
         with c2: metric_card("Orders", str(cust_df['InvoiceId'].nunique()))
         with c3: metric_card("Products Bought", str(cust_df['ProductId'].nunique()))
 
-        st.markdown(f"**Spend & share by {group_col}**")
+        st.markdown(f"**Spend & share by {group_col}, vs. the average customer**")
+        st.caption("\"Avg Customer\" columns are the mean spend/share per category across every customer in the current filters, not just this customer's peers.")
+
         cust_grp = cust_df.groupby(group_col)['LineRevenue'].sum().sort_values(ascending=False)
         cust_grp_share = cust_grp / cust_grp.sum()
+
+        # Average spend/share per category across ALL customers, 0-filled so
+        # customers who never bought in a category still count toward the average.
+        spend_matrix = fdf.groupby(['CustomerId', group_col])['LineRevenue'].sum().unstack(fill_value=0)
+        cust_totals_all = spend_matrix.sum(axis=1)
+        share_matrix = spend_matrix.div(cust_totals_all.replace(0, np.nan), axis=0).fillna(0)
+        avg_spend_by_cat = spend_matrix.mean(axis=0)
+        avg_share_by_cat = share_matrix.mean(axis=0)
+
         cust_grp_df = pd.DataFrame({
             group_col: cust_grp.index,
             'Spend': cust_grp.values,
-            'Share': cust_grp_share.map('{:.1%}'.format).values,
+            'AvgCustomerSpend': cust_grp.index.map(avg_spend_by_cat).fillna(0),
+            'Share': (cust_grp_share.values * 100),
+            'AvgCustomerShare': (cust_grp.index.map(avg_share_by_cat).fillna(0) * 100),
         })
-        show_df(cust_grp_df[cust_grp_df['Spend'] != 0], currency_cols=['Spend'])
+        cust_grp_df = cust_grp_df[cust_grp_df['Spend'] != 0].copy()
+        cust_grp_df['Share'] = cust_grp_df['Share'].map('{:.1f}%'.format)
+        cust_grp_df['AvgCustomerShare'] = cust_grp_df['AvgCustomerShare'].map('{:.1f}%'.format)
+        show_df(cust_grp_df, currency_cols=['Spend', 'AvgCustomerSpend'])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VIEW 4 — REPEAT PURCHASES
