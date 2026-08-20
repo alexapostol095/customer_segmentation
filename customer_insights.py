@@ -2764,28 +2764,6 @@ elif analysis == "Time Analysis":
                 min_value=ta_min, max_value=ta_max, key="ta_period_b"
             )
 
-        if st.session_state.pop('ta_yoy_clipped', False):
-            st.caption("Note: Period A was clipped to fit the data's available date range.")
-
-        if st.button("📅 Set Period A = same dates, 1 year earlier (based on Period B)", key="ta_yoy_preset"):
-            if len(period_b) == 2:
-                new_a_start = (pd.Timestamp(period_b[0]) - pd.DateOffset(years=1)).date()
-                new_a_end   = (pd.Timestamp(period_b[1]) - pd.DateOffset(years=1)).date()
-                clipped = False
-                if new_a_start < ta_min:
-                    new_a_start = ta_min
-                    clipped = True
-                if new_a_end > ta_max:
-                    new_a_end = ta_max
-                    clipped = True
-                if new_a_end < new_a_start:
-                    new_a_end = new_a_start
-                st.session_state['ta_period_a'] = (new_a_start, new_a_end)
-                st.session_state['ta_yoy_clipped'] = clipped
-                st.rerun()
-            else:
-                st.warning("Select a full Period B range (start and end date) first.")
-
         if len(period_a) != 2 or len(period_b) != 2:
             st.warning("Select a start and end date for both periods.")
         else:
