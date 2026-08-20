@@ -696,6 +696,7 @@ with st.sidebar:
         "Basket Segmentation",
         "KVI Classification",
         "Pricing Simulation",
+        "Glossary",
     ])
 
     st.markdown("---")
@@ -3512,3 +3513,74 @@ elif analysis == "Pricing Simulation":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="sim_download_btn"
             )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW 10 — GLOSSARY
+# ══════════════════════════════════════════════════════════════════════════════
+elif analysis == "Glossary":
+    st.markdown('<div class="section-header">Glossary</div>', unsafe_allow_html=True)
+    st.markdown("Plain-language definitions for the terms used throughout this app.")
+
+    glossary_entries = [
+        # (Category, Term, Definition)
+        ("Customer Behavior", "Recency", "How many days it's been since a customer's last order."),
+        ("Customer Behavior", "Frequency", "How many distinct orders a customer has placed in total."),
+        ("Customer Behavior", "Monetary", "A customer's total historical spend."),
+        ("Customer Behavior", "Avg Order Value (AOV)", "Total revenue divided by number of orders — the typical size of one order."),
+        ("Customer Behavior", "AvgGapDays", "The typical number of days between a customer's orders, based on their own order history. Specifically the median gap, not a simple average, so one unusually long or short gap doesn't skew it."),
+        ("Customer Behavior", "GapRatio", "How many of a customer's 'normal' order cycles have passed since we last saw them. A GapRatio of 3 means it's been three times longer than usual since their last order."),
+        ("Customer Behavior", "At Risk / Churned", "Customers who used to order repeatedly and have since gone quiet — see Repeat Purchases → At Risk / Churned."),
+
+        ("Products & KVI", "KVI (Key Value Item)", "A product classified as one of the most important in the assortment, based on a blend of demand, revenue, how many customers buy it, and how strongly it's linked to other frequently-bought products."),
+        ("Products & KVI", "Core", "A product that's meaningfully popular but doesn't rise to KVI status."),
+        ("Products & KVI", "Slow Mover", "A product with comparatively low demand, revenue, and reach."),
+        ("Products & KVI", "KVI Score", "A single composite score used to rank products for KVI/Core/Slow Mover classification. Blends demand share, revenue share, customer reach, and a co-purchase affinity score."),
+        ("Products & KVI", "Corr_Score", "A measure of how strongly a product tends to be bought alongside other frequently-purchased products. A high score means it's a common 'anchor' item across many different baskets."),
+        ("Products & KVI", "Demand / Revenue / Customer Proportion", "A product's share of total units sold, total revenue, or total customers, relative to every other product in scope."),
+        ("Products & KVI", "PurchaseCount", "The number of individual order lines that include this product."),
+
+        ("Baskets", "Basket", "A set of products that get bought together in the same order."),
+        ("Baskets", "Basket mode", "Requires every product in a basket to appear on the same invoice to count — a strict 'bought together' definition."),
+        ("Baskets", "Group of items mode", "A looser definition: a customer counts as a match if they've bought any of the group's products at any point, even across separate orders."),
+        ("Baskets", "No overlapping products / customers", "An optional constraint in Basket Exploration so that no product (or customer) counts toward more than one basket shown at once."),
+        ("Baskets", "Basket Revenue / Margin", "Revenue or margin generated specifically by a basket's own products, within the orders where that basket appears — not the whole order's revenue."),
+        ("Baskets", "Assortment coverage", "How many customers, and how much revenue, are touched by a given set of baskets."),
+
+        ("Data Structure", "MainGroup / SubGroup / SubSubGroup", "A three-level product category hierarchy, from broadest (MainGroup) to most specific (SubSubGroup)."),
+        ("Data Structure", "Aggregate rows by", "A sidebar setting that treats a chosen column (e.g. SubGroup) as if it were the Product ID everywhere in the app — useful for analyzing at a coarser level than individual products."),
+        ("Data Structure", "LineRevenue / LineMargin", "The revenue or margin for a single order line: quantity × price (minus cost, for margin)."),
+
+        ("Customer Specialty", "Specialty", "The single product category a customer spends the largest share of their money on."),
+        ("Customer Specialty", "Generalist", "A customer whose spending is too spread out across categories to have one clear specialty."),
+        ("Customer Specialty", "Specialist threshold", "The minimum spend share in a customer's top category required for them to count as a specialist rather than a generalist."),
+        ("Customer Specialty", "Customer Cluster", "A generic label used for whichever customer segmentation is currently active — from either Customer Specialty or Basket Segmentation."),
+
+        ("Pricing Simulation", "Baseline", "The actual revenue and margin for the selected period, before any simulated price changes are applied."),
+        ("Pricing Simulation", "Pricing rule matrix", "The grid of percentage price changes you set for each combination of customer segment and product category."),
+        ("Pricing Simulation", "Revenue / Margin Δ", "The change in revenue or margin the simulated pricing rules would produce, compared to the baseline."),
+
+        ("Time Analysis", "Period A / B", "The two date ranges being compared against each other."),
+        ("Time Analysis", "Only compare items present in both periods", "Excludes customers, products, or groups that were only active in one of the two periods, so the comparison focuses on like-for-like activity."),
+    ]
+
+    glossary_df = pd.DataFrame(glossary_entries, columns=['Category', 'Term', 'Definition'])
+
+    search_term = st.text_input("Search the glossary", placeholder="e.g. KVI, Recency, basket...")
+    if search_term:
+        mask = (
+            glossary_df['Term'].str.contains(search_term, case=False, na=False) |
+            glossary_df['Definition'].str.contains(search_term, case=False, na=False)
+        )
+        filtered = glossary_df[mask]
+    else:
+        filtered = glossary_df
+
+    if filtered.empty:
+        st.info("No glossary terms match your search.")
+    else:
+        for category in filtered['Category'].unique():
+            st.markdown(f"### {category}")
+            cat_rows = filtered[filtered['Category'] == category]
+            for _, row in cat_rows.iterrows():
+                st.markdown(f"**{row['Term']}** — {row['Definition']}")
+            st.markdown("")
