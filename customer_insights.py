@@ -975,17 +975,22 @@ elif analysis == "Overview":
     with c4: metric_card("Avg Order Value", fmt_currency(fdf.groupby('InvoiceId')['LineRevenue'].sum().mean()))
 
     st.markdown("")
+    group_col_ov = st.selectbox(
+        "Group revenue by", cat_cols,
+        index=cat_cols.index('MainGroup') if 'MainGroup' in cat_cols else 0,
+        key="ov_group"
+    )
+    grp_rev = fdf.groupby(group_col_ov)['LineRevenue'].sum().sort_values(ascending=True)
+    # Shared height for both charts below, so "Revenue by <group>" and "Revenue
+    # over Time" line up at the same level instead of the bar chart's height
+    # (which varies with how many categories exist) leaving the row uneven.
+    chart_height = max(3, min(len(grp_rev) * 0.35, 7))
+
     col_a, col_b = st.columns(2)
 
     with col_a:
-        group_col_ov = st.selectbox(
-            "Group revenue by", cat_cols,
-            index=cat_cols.index('MainGroup') if 'MainGroup' in cat_cols else 0,
-            key="ov_group"
-        )
-        grp_rev = fdf.groupby(group_col_ov)['LineRevenue'].sum().sort_values(ascending=True)
         st.markdown(f'<div class="section-header" style="font-size:1.1rem">Revenue by {group_col_ov}</div>', unsafe_allow_html=True)
-        fig, ax = plt.subplots(figsize=(6, max(3, len(grp_rev)*0.35)))
+        fig, ax = plt.subplots(figsize=(6, chart_height))
         bars = ax.barh(grp_rev.index.astype(str), grp_rev.values, color=PALETTE[0], alpha=0.85)
         ax.set_xlabel("Revenue (€)", fontsize=9)
         ax.xaxis.set_major_formatter(plt.FuncFormatter(euro_axis_formatter))
@@ -1000,7 +1005,7 @@ elif analysis == "Overview":
     with col_b:
         st.markdown('<div class="section-header" style="font-size:1.1rem">Revenue over Time</div>', unsafe_allow_html=True)
         time_rev = fdf.set_index('CreatedDate').resample('ME')['LineRevenue'].sum().reset_index()
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, chart_height))
         ax.fill_between(time_rev['CreatedDate'], time_rev['LineRevenue'], alpha=0.15, color=PALETTE[0])
         ax.plot(time_rev['CreatedDate'], time_rev['LineRevenue'], color=PALETTE[0], linewidth=2)
         ax.set_ylabel("Revenue (€)", fontsize=9)
