@@ -2088,6 +2088,11 @@ elif analysis == "Basket Segmentation":
             st.session_state['basket_assignment_metric'] = assign_metric
             st.session_state['basket_assignment_threshold'] = assign_threshold
             st.session_state['basket_assignment_mode'] = basket_mode_label
+            # Snapshot the exact basket definitions used for this run -- if the
+            # user edits/renames/removes baskets afterward without re-running,
+            # the export should still describe the baskets that actually
+            # produced this assignment_df, not whatever's currently defined.
+            st.session_state['basket_assignment_baskets_used'] = {k: list(v) for k, v in baskets.items()}
 
     # ── Show assignment results ────────────────────────────────────────────
     if 'basket_assignment' in st.session_state:
@@ -2182,9 +2187,13 @@ elif analysis == "Basket Segmentation":
             with pd.ExcelWriter(out, engine='openpyxl') as writer:
                 assignment_df.to_excel(writer, sheet_name='Customer Assignment', index=False)
                 summary.to_excel(writer, sheet_name='Summary', index=False)
-                # Basket definitions
+                # Basket definitions — use the baskets as they were when this
+                # assignment last ran, not whatever's currently defined, so
+                # this sheet always matches the Customer Assignment columns
+                # above rather than reflecting edits made since.
+                baskets_for_export = st.session_state.get('basket_assignment_baskets_used', st.session_state['defined_baskets'])
                 basket_def_rows = []
-                for bname, bprods in st.session_state['defined_baskets'].items():
+                for bname, bprods in baskets_for_export.items():
                     for p in bprods:
                         basket_def_rows.append({'Basket': bname, 'ProductId': p})
                 pd.DataFrame(basket_def_rows).to_excel(writer, sheet_name='Basket Definitions', index=False)
@@ -2538,12 +2547,23 @@ elif analysis == "Basket Exploration":
 
         if st.button("Export selected to Basket Segmentation", key="exp_export_btn", disabled=not export_selected):
             existing_names = set(st.session_state['defined_baskets'].keys())
+            _name_col_exp = get_product_name_col(fdf)
+            _name_map_exp = fdf.drop_duplicates('ProductId').set_index('ProductId')[_name_col_exp] if _name_col_exp else None
+
+            def _combo_label(combo):
+                if _name_map_exp is None:
+                    return ' + '.join(str(p) for p in combo)
+                parts = []
+                for p in combo:
+                    nm = _name_map_exp.get(str(p))
+                    parts.append(str(nm) if pd.notna(nm) and nm else str(p))
+                return ' + '.join(parts)
+
             added = 0
             for label in export_selected:
                 idx = label_to_idx[label]
                 combo = exp_reset.loc[idx, 'Combo']
-                products_str = exp_reset.loc[idx, 'Products']
-                base_name = f"Explored: {products_str}"
+                base_name = f"Explored: {_combo_label(combo)}"
                 if len(base_name) > 80:
                     base_name = base_name[:77] + "..."
                 name = base_name
