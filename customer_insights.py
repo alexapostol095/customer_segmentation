@@ -731,6 +731,11 @@ with st.sidebar:
     with filt_reset_col:
         st.button("Reset", key="reset_filters_btn", on_click=_reset_filters, help="Clear all filters below")
 
+    # Placeholder now, filled in below once we know which filters are actually
+    # active -- Streamlit only knows widget values after they've rendered, but
+    # st.empty() lets the indicator still appear visually above them.
+    _active_filters_placeholder = st.empty()
+
     _rk = st.session_state['filter_reset_counter']  # suffix appended to filter widget keys
 
     if min_date is not None:
@@ -752,6 +757,20 @@ with st.sidebar:
     for col in filter_cat_cols:
         selected = st.multiselect(col, col_vals[col], placeholder=f"All {col}", key=f"filter_{col}_{_rk}")
         cat_filters[col] = selected
+
+    _active_filter_count = 0
+    if min_date is not None and date_range and len(date_range) == 2 and (date_range[0] != min_date or date_range[1] != max_date):
+        _active_filter_count += 1
+    if selected_customers:
+        _active_filter_count += 1
+    for _col, _vals in cat_filters.items():
+        if _vals:
+            _active_filter_count += 1
+
+    if _active_filter_count == 0:
+        _active_filters_placeholder.caption("No filters active — showing all data.")
+    else:
+        _active_filters_placeholder.caption(f"🔎 {_active_filter_count} filter{'s' if _active_filter_count != 1 else ''} active")
 
     st.markdown("---")
     st.markdown(f"<span style='font-size:0.75rem;color:#888'>{n_rows:,} rows · {n_customers:,} customers</span>", unsafe_allow_html=True)
