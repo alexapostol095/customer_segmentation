@@ -2143,8 +2143,19 @@ elif analysis == "Basket Segmentation":
 
         # ── Confirm to use in KVI ──────────────────────────────────────────
         st.markdown("---")
+        st.markdown(
+            """
+            <div style="background:#2a2310;border:1px solid #e8c97e;border-radius:8px;
+                        padding:1rem 1.2rem;margin-bottom:0.6rem;">
+                <span style="color:#e8c97e;font-weight:600;font-size:0.95rem;">
+                    ⭐ Final step — confirm this segmentation to make it available in KVI Classification
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         confirm_basket_seg = st.checkbox(
-            "Use this basket segmentation for KVI Classification",
+            "**Use this basket segmentation for KVI Classification**",
             key="confirm_basket_seg_checkbox"
         )
         if confirm_basket_seg:
@@ -2192,8 +2203,14 @@ elif analysis == "Basket Segmentation":
                 # this sheet always matches the Customer Assignment columns
                 # above rather than reflecting edits made since.
                 baskets_for_export = st.session_state.get('basket_assignment_baskets_used', st.session_state['defined_baskets'])
+                # Order these rows the same way Summary is ordered (by
+                # Customers descending), so the two sheets line up when
+                # cross-referenced instead of each using a different order.
+                basket_order = [b for b in summary['AssignedBasket'] if b in baskets_for_export]
+                basket_order += [b for b in baskets_for_export if b not in basket_order]
                 basket_def_rows = []
-                for bname, bprods in baskets_for_export.items():
+                for bname in basket_order:
+                    bprods = baskets_for_export[bname]
                     for p in bprods:
                         basket_def_rows.append({'Basket': bname, 'ProductId': p})
                 pd.DataFrame(basket_def_rows).to_excel(writer, sheet_name='Basket Definitions', index=False)
